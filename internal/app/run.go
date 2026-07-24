@@ -537,10 +537,23 @@ func runPushPull(ac *appConfig, op transfer.Operation) error {
 		return fmt.Errorf("no files to transfer after applying exclude patterns")
 	}
 
-	// Confirm when targeting ALL servers (skip if using -S interactive picker)
-	if !ac.noConfirm && !ac.dryRun && ac.server == "" && ac.tags == "" && !ac.pickSrv {
+	// Convert servers to slice and apply interactive picker BEFORE any prompts
+	servers := make([]config.Server, 0, len(cfg.Servers))
+	for _, s := range cfg.Servers {
+		servers = append(servers, s)
+	}
+	if ac.pickSrv {
+		selected, err := pickServersFZF(servers, ac.server, splitTags(ac.tags))
+		if err != nil {
+			return err
+		}
+		servers = selected
+	}
+
+	// Confirm when targeting ALL servers
+	if !ac.noConfirm && !ac.dryRun && len(servers) == len(cfg.Servers) {
 		if cfg.Defaults.ConfirmWithoutFilter {
-			if !confirmPrompt(fmt.Sprintf("Transfer %d files to ALL %d servers?", fileSet.Count, len(cfg.Servers))) {
+			if !confirmPrompt(fmt.Sprintf("Transfer %d files to ALL %d servers?", fileSet.Count, len(servers))) {
 				fmt.Fprintln(os.Stderr, "  Cancelled.")
 				return nil
 			}
@@ -552,25 +565,10 @@ func runPushPull(ac *appConfig, op transfer.Operation) error {
 		gitDir := cwd()
 		summary := transfer.GitDiffSummary(fileSet.Files, gitDir)
 		fmt.Fprintf(os.Stderr, "  ─── Diff Preview ───\n%s\n", summary)
-		if !confirmPrompt(fmt.Sprintf("Transfer %d files to %d server(s)?", fileSet.Count, len(cfg.Servers))) {
+		if !confirmPrompt(fmt.Sprintf("Transfer %d files to %d server(s)?", fileSet.Count, len(servers))) {
 			fmt.Fprintln(os.Stderr, "  Cancelled.")
 			return nil
 		}
-	}
-
-	// Convert servers to slice
-	servers := make([]config.Server, 0, len(cfg.Servers))
-	for _, s := range cfg.Servers {
-		servers = append(servers, s)
-	}
-
-	// Interactive server selection via fzf
-	if ac.pickSrv {
-		selected, err := pickServersFZF(servers, ac.server, splitTags(ac.tags))
-		if err != nil {
-			return err
-		}
-		servers = selected
 	}
 
 	// Build transfer config
