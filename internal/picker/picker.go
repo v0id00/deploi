@@ -194,7 +194,13 @@ func pickGitCommit(gitDir, commit string, baseDir string) (*FileSet, error) {
 		commit = "HEAD"
 	}
 
-	cmd := exec.Command("git", "-C", gitDir, "diff-tree", "--no-commit-id", "--name-only", "-r", commit)
+	// For the root commit (no parent), add --root flag
+	args := []string{"-C", gitDir, "diff-tree", "--no-commit-id", "--name-only", "-r"}
+	if _, err := exec.Command("git", "-C", gitDir, "rev-parse", commit+"~1").Output(); err != nil {
+		args = append(args, "--root")
+	}
+	args = append(args, commit)
+	cmd := exec.Command("git", args...)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git diff-tree %s: %w", commit, err)
