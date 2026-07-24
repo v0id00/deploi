@@ -168,7 +168,7 @@ func pickGitDiff(gitDir, baseDir string, includeStaged, includeUntracked bool) (
 	all := make(map[string]struct{})
 
 	// Get unstaged changes (tracked files modified in working tree)
-	if out, err := exec.Command("git", "-C", gitDir, "diff", "--name-only", "--diff-filter=ACDMRTUXB").Output(); err == nil {
+	if out, err := exec.Command("git", "-C", gitDir, "diff", "--name-only").Output(); err == nil {
 		for _, f := range parseFileList(string(out)) {
 			all[f] = struct{}{}
 		}
@@ -176,7 +176,7 @@ func pickGitDiff(gitDir, baseDir string, includeStaged, includeUntracked bool) (
 
 	// Get staged changes (unless disabled)
 	if includeStaged {
-		if out, err := exec.Command("git", "-C", gitDir, "diff", "--cached", "--name-only", "--diff-filter=ACDMRTUXB").Output(); err == nil {
+		if out, err := exec.Command("git", "-C", gitDir, "diff", "--cached", "--name-only").Output(); err == nil {
 			for _, f := range parseFileList(string(out)) {
 				all[f] = struct{}{}
 			}
@@ -320,12 +320,12 @@ func pickFZF(paths []string, gitDir, baseDir string) (*FileSet, error) {
 		// Use git changes as candidates (staged + unstaged + untracked)
 		all := make(map[string]struct{})
 
-		if out, err := exec.Command("git", "-C", gitDir, "diff", "--name-only", "--diff-filter=ACDMRTUXB").Output(); err == nil {
+		if out, err := exec.Command("git", "-C", gitDir, "diff", "--name-only").Output(); err == nil {
 			for _, f := range parseFileList(string(out)) {
 				all[f] = struct{}{}
 			}
 		}
-		if out, err := exec.Command("git", "-C", gitDir, "diff", "--cached", "--name-only", "--diff-filter=ACDMRTUXB").Output(); err == nil {
+		if out, err := exec.Command("git", "-C", gitDir, "diff", "--cached", "--name-only").Output(); err == nil {
 			for _, f := range parseFileList(string(out)) {
 				all[f] = struct{}{}
 			}
@@ -392,10 +392,10 @@ func pickEditor(paths []string, editor, baseDir string) (*FileSet, error) {
 		// Git changes (staged + unstaged + untracked)
 		all := make(map[string]struct{})
 
-		if out, err := exec.Command("git", "diff", "--name-only", "--diff-filter=ACDMRTUXB").Output(); err == nil {
+		if out, err := exec.Command("git", "diff", "--name-only").Output(); err == nil {
 			for _, f := range parseFileList(string(out)) { all[f] = struct{}{} }
 		}
-		if out, err := exec.Command("git", "diff", "--cached", "--name-only", "--diff-filter=ACDMRTUXB").Output(); err == nil {
+		if out, err := exec.Command("git", "diff", "--cached", "--name-only").Output(); err == nil {
 			for _, f := range parseFileList(string(out)) { all[f] = struct{}{} }
 		}
 		if out, err := exec.Command("git", "ls-files", "--others", "--exclude-standard").Output(); err == nil {
