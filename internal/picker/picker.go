@@ -186,6 +186,11 @@ func pickGitDiff(gitDir, baseDir string, includeStaged, includeUntracked bool) (
 				continue
 			}
 
+			// Handle renames: "oldname -> newname" → use newname
+			if idx := strings.Index(filename, " -> "); idx >= 0 {
+				filename = strings.TrimSpace(filename[idx+4:])
+			}
+
 			indexStatus := status[0]
 			workTreeStatus := status[1]
 
@@ -337,6 +342,9 @@ func pickFZF(paths []string, gitDir, baseDir string) (*FileSet, error) {
 				line = strings.TrimSpace(line)
 				if line == "" || len(line) < 4 { continue }
 				filename := strings.TrimSpace(line[3:])
+				if idx := strings.Index(filename, " -> "); idx >= 0 {
+					filename = strings.TrimSpace(filename[idx+4:])
+				}
 				if filename != "" {
 					candidates = append(candidates, filename)
 				}
@@ -398,6 +406,9 @@ func pickEditor(paths []string, editor, baseDir string) (*FileSet, error) {
 				line = strings.TrimSpace(line)
 				if line == "" || len(line) < 4 { continue }
 				filename := strings.TrimSpace(line[3:])
+				if idx := strings.Index(filename, " -> "); idx >= 0 {
+					filename = strings.TrimSpace(filename[idx+4:])
+				}
 				if filename != "" {
 					candidates = append(candidates, filename)
 				}
