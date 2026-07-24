@@ -154,49 +154,54 @@ func pickManual(paths []string, baseDir string) (*FileSet, error) {
 }
 
 // pickGitDiff returns files that have changed in the working tree.
+// It uses git status --porcelain for reliable staged+unstaged detection.
 // It includes staged, unstaged, and optionally untracked files.
 func pickGitDiff(gitDir, baseDir string, includeStaged, includeUntracked bool) (*FileSet, error) {
 	if gitDir == "" {
 		gitDir = baseDir
 	}
 
-	// Check if we're in a git repo
 	if !isGitRepo(gitDir) {
 		return nil, fmt.Errorf("not a git repository: %s", gitDir)
 	}
 
 	all := make(map[string]struct{})
 
-	// Get unstaged changes (tracked files modified in working tree)
-	if out, err := exec.Command("git", "-C", gitDir, "diff", "--name-only").Output(); err == nil {
-		for _, f := range parseFileList(string(out)) {
-			all[f] = struct{}{}
-		}
-	}
-
-	// Get staged changes (unless disabled) — also include files that
-	// differ from HEAD. This covers newly staged files and modified staged files.
-	if includeStaged {
-		// git diff --cached shows staged changes compared to HEAD
-		if out, err := exec.Command("git", "-C", gitDir, "diff", "--cached", "--name-only").Output(); err == nil {
-			for _, f := range parseFileList(string(out)) {
-				all[f] = struct{}{}
+	// git status --porcelain is the most reliable way to get ALL changes.
+	// Format: "XY filename" where X=index(staged), Y=working tree(unstaged)
+	//   X/Y letters: M=modified, A=added, D=deleted, R=renamed, ??=untracked
+	if out, err := exec.Command("git", "-C", gitDir, "status", "--porcelain").Output(); err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
 			}
-		}
-		// git diff --cached --diff-filter=A also catches newly added files
-		// that might slip through on some git versions
-		if out, err := exec.Command("git", "-C", gitDir, "diff", "--cached", "--name-only", "--diff-filter=A").Output(); err == nil {
-			for _, f := range parseFileList(string(out)) {
-				all[f] = struct{}{}
+			if len(line) < 4 {
+				continue
 			}
-		}
-	}
+			status := line[:2]
+			// Filename starts at column 3 (after "XY ")
+			filename := strings.TrimSpace(line[3:])
+			if filename == "" {
+				continue
+			}
 
-	// Get untracked files (unless disabled)
-	if includeUntracked {
-		if out, err := exec.Command("git", "-C", gitDir, "ls-files", "--others", "--exclude-standard").Output(); err == nil {
-			for _, f := range parseFileList(string(out)) {
-				all[f] = struct{}{}
+			indexStatus := status[0]
+			workTreeStatus := status[1]
+
+			// Staged changes (index status is not space)
+			if includeStaged && indexStatus != ' ' && indexStatus != '?' {
+				all[filename] = struct{}{}
+			}
+
+			// Unstaged changes (work tree status is not space)
+			if workTreeStatus != ' ' && workTreeStatus != '?' {
+				all[filename] = struct{}{}
+			}
+
+			// Untracked files (??)
+			if includeUntracked && status == "??" {
+				all[filename] = struct{}{}
 			}
 		}
 	}
@@ -326,27 +331,16 @@ func pickFZF(paths []string, gitDir, baseDir string) (*FileSet, error) {
 
 	candidates := paths
 	if len(candidates) == 0 && gitDir != "" {
-		// Use git changes as candidates (staged + unstaged + untracked)
-		all := make(map[string]struct{})
-
-		if out, err := exec.Command("git", "-C", gitDir, "diff", "--name-only").Output(); err == nil {
-			for _, f := range parseFileList(string(out)) {
-				all[f] = struct{}{}
+		// Use git status --porcelain for all changes (staged + unstaged + untracked)
+		if out, err := exec.Command("git", "-C", gitDir, "status", "--porcelain").Output(); err == nil {
+			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || len(line) < 4 { continue }
+				filename := strings.TrimSpace(line[3:])
+				if filename != "" {
+					candidates = append(candidates, filename)
+				}
 			}
-		}
-		if out, err := exec.Command("git", "-C", gitDir, "diff", "--cached", "--name-only").Output(); err == nil {
-			for _, f := range parseFileList(string(out)) {
-				all[f] = struct{}{}
-			}
-		}
-		if out, err := exec.Command("git", "-C", gitDir, "ls-files", "--others", "--exclude-standard").Output(); err == nil {
-			for _, f := range parseFileList(string(out)) {
-				all[f] = struct{}{}
-			}
-		}
-
-		for f := range all {
-			candidates = append(candidates, f)
 		}
 	}
 
@@ -398,20 +392,17 @@ func pickEditor(paths []string, editor, baseDir string) (*FileSet, error) {
 
 	candidates := paths
 	if len(candidates) == 0 {
-		// Git changes (staged + unstaged + untracked)
-		all := make(map[string]struct{})
-
-		if out, err := exec.Command("git", "diff", "--name-only").Output(); err == nil {
-			for _, f := range parseFileList(string(out)) { all[f] = struct{}{} }
+		// Git status --porcelain (staged + unstaged + untracked)
+		if out, err := exec.Command("git", "status", "--porcelain").Output(); err == nil {
+			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || len(line) < 4 { continue }
+				filename := strings.TrimSpace(line[3:])
+				if filename != "" {
+					candidates = append(candidates, filename)
+				}
+			}
 		}
-		if out, err := exec.Command("git", "diff", "--cached", "--name-only").Output(); err == nil {
-			for _, f := range parseFileList(string(out)) { all[f] = struct{}{} }
-		}
-		if out, err := exec.Command("git", "ls-files", "--others", "--exclude-standard").Output(); err == nil {
-			for _, f := range parseFileList(string(out)) { all[f] = struct{}{} }
-		}
-
-		for f := range all { candidates = append(candidates, f) }
 	}
 
 	if len(candidates) == 0 {
