@@ -537,8 +537,8 @@ func runPushPull(ac *appConfig, op transfer.Operation) error {
 		return fmt.Errorf("no files to transfer after applying exclude patterns")
 	}
 
-	// Confirm when targeting ALL servers
-	if !ac.noConfirm && !ac.dryRun && ac.server == "" && ac.tags == "" {
+	// Confirm when targeting ALL servers (skip if using -S interactive picker)
+	if !ac.noConfirm && !ac.dryRun && ac.server == "" && ac.tags == "" && !ac.pickSrv {
 		if cfg.Defaults.ConfirmWithoutFilter {
 			if !confirmPrompt(fmt.Sprintf("Transfer %d files to ALL %d servers?", fileSet.Count, len(cfg.Servers))) {
 				fmt.Fprintln(os.Stderr, "  Cancelled.")
@@ -564,15 +564,13 @@ func runPushPull(ac *appConfig, op transfer.Operation) error {
 		servers = append(servers, s)
 	}
 
-	// Interactive server selection via fzf (after -s/-t filtering)
+	// Interactive server selection via fzf
 	if ac.pickSrv {
 		selected, err := pickServersFZF(servers, ac.server, splitTags(ac.tags))
 		if err != nil {
 			return err
 		}
 		servers = selected
-		ac.server = ""  // already filtered, don't filter again
-		ac.tags = ""
 	}
 
 	// Build transfer config
