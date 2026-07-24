@@ -1,0 +1,61 @@
+# deploi.toml — v0id00/deploi configuration
+# Multi-server file sync and deploy tool.
+#
+# Copy this file to ./deploi.toml or ~/.config/deploi/config.toml
+
+[defaults]
+# Connection / execution
+timeout = 300
+concurrency = 5
+dry_run = false
+
+# Safety
+force = false
+
+# Output
+json = false
+quiet = false
+show_progress = true
+
+# Editor for interactive file selection (falls back to $VISUAL → $EDITOR → vim)
+editor = "vim"
+
+# Confirm when targeting ALL servers (no -s filter)
+confirm_without_filter = true
+
+# Default remote path (can be overridden per server)
+remote_path = "/home/deploy/www/"
+
+# Rsync binary (default: "rsync")
+rsync_bin = "rsync"
+
+# Default filter (applied when no CLI flag is given)
+server = ""
+tags = ""
+
+# --- Servers ---
+
+[servers.prod-web-1]
+host = "web1.example.com"
+port = 22
+user = "deploy"
+# password = ""          # optional: use SSH key instead
+# key_file = "~/.ssh/id_ed25519"  # optional
+method = "rsync"         # rsync (default), sftp, ssh
+tags = ["prod", "web"]
+remote_path = "/var/www/project/"
+rsync_options = "-avz --delete"
+
+[servers.prod-web-2]
+host = "web2.example.com"
+port = 22
+user = "deploy"
+tags = ["prod", "web"]
+# inherits defaults: method=rsync, remote_path from [defaults]
+
+[servers.staging]
+host = "staging.example.com"
+port = 22
+user = "deploy"
+tags = ["staging"]
+# remote_path = "/home/deploy/staging/"  # override default
