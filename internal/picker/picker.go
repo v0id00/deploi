@@ -167,20 +167,18 @@ func pickGitDiff(gitDir, baseDir string, includeStaged, includeUntracked bool) (
 
 	all := make(map[string]struct{})
 
-	// git status --porcelain is the most reliable way to get ALL changes.
-	// Format: "XY filename" where X=index(staged), Y=working tree(unstaged)
-	//   X/Y letters: M=modified, A=added, D=deleted, R=renamed, ??=untracked
+	// git status --porcelain format: "XY filename"
+	//   XY = 2 status chars (space, M, A, D, R, ?, etc.)
+	//   Then a single space separator, then the filename.
+	// IMPORTANT: do NOT trim the line — leading space IS the status field.
 	if out, err := exec.Command("git", "-C", gitDir, "status", "--porcelain").Output(); err == nil {
-		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
+		for _, line := range strings.Split(string(out), "\n") {
 			if len(line) < 4 {
 				continue
 			}
+			// status = first 2 chars (e.g. " M", "M ", "MM", "??", "A ")
 			status := line[:2]
-			// Filename starts at column 3 (after "XY ")
+			// filename = everything after the "XY " prefix (3rd char is always space)
 			filename := strings.TrimSpace(line[3:])
 			if filename == "" {
 				continue
@@ -194,17 +192,17 @@ func pickGitDiff(gitDir, baseDir string, includeStaged, includeUntracked bool) (
 			indexStatus := status[0]
 			workTreeStatus := status[1]
 
-			// Staged changes (index status is not space)
+			// Staged changes (index status is not space and not ?)
 			if includeStaged && indexStatus != ' ' && indexStatus != '?' {
 				all[filename] = struct{}{}
 			}
 
-			// Unstaged changes (work tree status is not space)
+			// Unstaged changes (work tree status is not space and not ?)
 			if workTreeStatus != ' ' && workTreeStatus != '?' {
 				all[filename] = struct{}{}
 			}
 
-			// Untracked files (??)
+			// Untracked files (status == "??")
 			if includeUntracked && status == "??" {
 				all[filename] = struct{}{}
 			}
@@ -336,11 +334,10 @@ func pickFZF(paths []string, gitDir, baseDir string) (*FileSet, error) {
 
 	candidates := paths
 	if len(candidates) == 0 && gitDir != "" {
-		// Use git status --porcelain for all changes (staged + unstaged + untracked)
+		// git status --porcelain: "XY filename" — do NOT trim leading space
 		if out, err := exec.Command("git", "-C", gitDir, "status", "--porcelain").Output(); err == nil {
-			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-				line = strings.TrimSpace(line)
-				if line == "" || len(line) < 4 { continue }
+			for _, line := range strings.Split(string(out), "\n") {
+				if len(line) < 4 { continue }
 				filename := strings.TrimSpace(line[3:])
 				if idx := strings.Index(filename, " -> "); idx >= 0 {
 					filename = strings.TrimSpace(filename[idx+4:])
@@ -400,11 +397,10 @@ func pickEditor(paths []string, editor, baseDir string) (*FileSet, error) {
 
 	candidates := paths
 	if len(candidates) == 0 {
-		// Git status --porcelain (staged + unstaged + untracked)
+		// git status --porcelain: "XY filename" — do NOT trim leading space
 		if out, err := exec.Command("git", "status", "--porcelain").Output(); err == nil {
-			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-				line = strings.TrimSpace(line)
-				if line == "" || len(line) < 4 { continue }
+			for _, line := range strings.Split(string(out), "\n") {
+				if len(line) < 4 { continue }
 				filename := strings.TrimSpace(line[3:])
 				if idx := strings.Index(filename, " -> "); idx >= 0 {
 					filename = strings.TrimSpace(filename[idx+4:])
