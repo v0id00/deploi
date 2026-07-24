@@ -77,7 +77,7 @@ jobs:
         working-directory: ${{ github.workspace }}/cmd/deploi
       - name: Checksum
         run: |
-          cd dist
+          cd "${{ github.workspace }}/dist"
           sha256sum deploi-${{ matrix.os.name }}* > deploi-${{ matrix.os.name }}.sha256
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
