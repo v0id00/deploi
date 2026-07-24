@@ -1244,6 +1244,12 @@ func hasAnyTag(serverTags, filterTags []string) bool {
 
 func cwd() string { d, _ := os.Getwd(); return d }
 
+// isRealTerminal checks if stdin is a real terminal (not piped).
+func isRealTerminal() bool {
+	stat, _ := os.Stdin.Stat()
+	return (stat.Mode() & os.ModeCharDevice) != 0
+}
+
 // pickServersFZF shows candidates in fzf and returns the selected servers.
 // If fzf is not installed, falls back to editor mode.
 func pickServersFZF(servers []config.Server, serverFilter string, tagFilter []string) ([]config.Server, error) {
@@ -1280,41 +1286,54 @@ func pickServersFZF(servers []config.Server, serverFilter string, tagFilter []st
 		}
 	}
 
-	// Try fzf first
-	if _, err := exec.LookPath("fzf"); err == nil {
-		input := strings.Join(lines, "\n")
-		cmd := exec.Command("fzf", "--multi", "--prompt=Select servers (Tab to multi-select)> ")
-		cmd.Stdin = strings.NewReader(input)
-		cmd.Stderr = os.Stderr
-		out, err := cmd.Output()
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 130 {
-				return nil, fmt.Errorf("selection cancelled")
-			}
-			// Fall through to editor mode
-		} else {
-			selected := parseFileListFZF(string(out))
-			if len(selected) == 0 {
-				return nil, fmt.Errorf("no servers selected")
-			}
-			// Map selected display lines back to server names
-			nameMap := make(map[string]bool)
-			for _, line := range selected {
-				parts := strings.Fields(line)
-				if len(parts) > 0 {
-					nameMap[parts[0]] = true
+	// Try fzf first (only if we have a real terminal)
+	if _, err := exec.LookPath("fzf"); err == nil && isRealTerminal() {
+		// Write candidates to a temp file for fzf to read
+		tmpFile, err := os.CreateTemp("", "deploi-srv-candidates-*")
+		if err == nil {
+			tmpPath := tmpFile.Name()
+			os.WriteFile(tmpPath, []byte(strings.Join(lines, "\n")), 0644)
+			tmpFile.Close()
+			defer os.Remove(tmpPath)
+
+			cmd := exec.Command("fzf", "--multi",
+				"--prompt=Select servers (Tab to multi-select)> ")
+			cmd.Stderr = os.Stderr
+			// Read candidates from the temp file via stdin
+			f, _ := os.Open(tmpPath)
+			cmd.Stdin = f
+			out, err := cmd.Output()
+			f.Close()
+
+			if err != nil {
+				if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 130 {
+					return nil, fmt.Errorf("selection cancelled")
 				}
-			}
-			var result []config.Server
-			for _, s := range filtered {
-				if nameMap[s.Name] {
-					result = append(result, s)
+				// Fall through to editor mode
+			} else {
+				selected := parseFileListFZF(string(out))
+				if len(selected) == 0 {
+					return nil, fmt.Errorf("no servers selected")
 				}
+				// Map selected display lines back to server names
+				nameMap := make(map[string]bool)
+				for _, line := range selected {
+					parts := strings.Fields(line)
+					if len(parts) > 0 {
+						nameMap[parts[0]] = true
+					}
+				}
+				var result []config.Server
+				for _, s := range filtered {
+					if nameMap[s.Name] {
+						result = append(result, s)
+					}
+				}
+				if len(result) == 0 {
+					return nil, fmt.Errorf("no servers selected")
+				}
+				return result, nil
 			}
-			if len(result) == 0 {
-				return nil, fmt.Errorf("no servers selected")
-			}
-			return result, nil
 		}
 	}
 
