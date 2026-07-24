@@ -174,9 +174,18 @@ func pickGitDiff(gitDir, baseDir string, includeStaged, includeUntracked bool) (
 		}
 	}
 
-	// Get staged changes (unless disabled)
+	// Get staged changes (unless disabled) — also include files that
+	// differ from HEAD. This covers newly staged files and modified staged files.
 	if includeStaged {
+		// git diff --cached shows staged changes compared to HEAD
 		if out, err := exec.Command("git", "-C", gitDir, "diff", "--cached", "--name-only").Output(); err == nil {
+			for _, f := range parseFileList(string(out)) {
+				all[f] = struct{}{}
+			}
+		}
+		// git diff --cached --diff-filter=A also catches newly added files
+		// that might slip through on some git versions
+		if out, err := exec.Command("git", "-C", gitDir, "diff", "--cached", "--name-only", "--diff-filter=A").Output(); err == nil {
 			for _, f := range parseFileList(string(out)) {
 				all[f] = struct{}{}
 			}
