@@ -1,0 +1,108 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go build -o /dev/null ./cmd/deploi/
+      - run: go test ./... -v -count=1
+
+  release:
+    name: Release
+    needs: [test]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        os:
+          - name: linux-amd64
+            goos: linux
+            goarch: amd64
+          - name: linux-x86
+            goos: linux
+            goarch: 386
+          - name: linux-arm64
+            goos: linux
+            goarch: arm64
+          - name: macos-amd64
+            goos: darwin
+            goarch: amd64
+          - name: macos-arm64
+            goos: darwin
+            goarch: arm64
+          - name: windows-amd64
+            goos: windows
+            goarch: amd64
+          - name: windows-x86
+            goos: windows
+            goarch: 386
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build (${{ matrix.os.name }})
+        run: |
+          mkdir -p ../dist
+          export GOOS=${{ matrix.os.goos }}
+          export GOARCH=${{ matrix.os.goarch }}
+          export VERSION=$(git describe --tags --always 2>/dev/null || echo dev)
+          EXT=""
+          [ "$GOOS" = "windows" ] && EXT=".exe"
+          go build \
+            -ldflags="-X 'github.com/v0id00/deploi/internal/app.version=${VERSION}'" \
+            -o "../dist/deploi-${{ matrix.os.name }}${EXT}" .
+        working-directory: ${{ github.workspace }}/cmd/deploi
+      - name: Checksum
+        run: |
+          cd dist
+          sha256sum deploi-${{ matrix.os.name }}* > deploi-${{ matrix.os.name }}.sha256
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploi-${{ matrix.os.name }}
+          path: dist/
+
+  publish:
+    name: Publish Release
+    needs: [release]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          find dist/ -type f \( -name "deploi-*" -o -name "*.sha256" \) -exec cp {} release-assets/ \;
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: deploi ${{ github.ref_name }}
+          files: release-assets/*
+          draft: false
+          prerelease: false

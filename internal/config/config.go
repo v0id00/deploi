@@ -41,6 +41,18 @@ type Defaults struct {
 
 	// Default remote path
 	RemotePath string `toml:"remote_path,omitempty"`
+
+	// Exclude patterns (like .gitignore). Glob patterns.
+	Exclude []string `toml:"exclude,omitempty"`
+
+	// Honour .gitignore when selecting files (default: true)
+	RespectGitignore *bool `toml:"respect_gitignore,omitempty"`
+
+	// Skip the diff preview confirmation (default: show preview)
+	NoPreview bool `toml:"no_preview,omitempty"`
+
+	// Default profile to use when --profile is not given
+	Profile string `toml:"profile,omitempty"`
 }
 
 // SetDefaults fills zero-valued fields with sensible defaults.
@@ -54,6 +66,34 @@ func (d *Defaults) SetDefaults() {
 	if d.RsyncBin == "" {
 		d.RsyncBin = "rsync"
 	}
+	// RespectGitignore defaults to true
+	if d.RespectGitignore == nil {
+		t := true
+		d.RespectGitignore = &t
+	}
+}
+
+// IsRespectGitignore returns whether .gitignore should be respected.
+func (d *Defaults) IsRespectGitignore() bool {
+	return d.RespectGitignore != nil && *d.RespectGitignore
+}
+
+// Hooks defines commands to run before/after transfer on a server.
+type Hooks struct {
+	Pre  []string `toml:"pre,omitempty"`
+	Post []string `toml:"post,omitempty"`
+}
+
+// Profile defines a named deploy profile.
+type Profile struct {
+	Method     string   `toml:"method,omitempty"`
+	Paths      []string `toml:"paths,omitempty"`
+	RemotePath string   `toml:"remote_path,omitempty"`
+	Exclude    []string `toml:"exclude,omitempty"`
+	Commit     string   `toml:"commit,omitempty"`
+	Branch     string   `toml:"branch,omitempty"`
+	PickCommit bool     `toml:"pick_commit,omitempty"`
+	RsyncOpts  string   `toml:"rsync_options,omitempty"`
 }
 
 // Server defines a single deploy target.
@@ -72,9 +112,19 @@ type Server struct {
 
 	// Rsync-specific overrides
 	RsyncOptions string `toml:"rsync_options,omitempty"`
+
+	// Hooks: pre/post SSH commands
+	Hooks *Hooks `toml:"hooks,omitempty"`
+
+	// Per-server exclude overrides
+	Exclude []string `toml:"exclude,omitempty"`
+
+	// Notifications
+	NotifyOnSuccess bool `toml:"notify_on_success,omitempty"`
+	NotifyOnFail    bool `toml:"notify_on_fail,omitempty"`
 }
 
-// DSN returns an SSH connection string (user@host:port).
+// Addr returns an SSH connection string (user@host:port).
 func (s Server) Addr() string {
 	hostPort := s.Host
 	if s.Port > 0 && s.Port != 22 {
@@ -90,6 +140,7 @@ func (s Server) Addr() string {
 type Config struct {
 	Defaults Defaults            `toml:"defaults,omitempty"`
 	Servers  map[string]Server   `toml:"servers"`
+	Profiles map[string]Profile  `toml:"profiles,omitempty"`
 }
 
 // Load reads and parses a TOML config file.
@@ -124,6 +175,9 @@ func Load(path string) (*Config, error) {
 		if srv.RemotePath == "" {
 			srv.RemotePath = cfg.Defaults.RemotePath
 		}
+		if srv.Exclude == nil {
+			srv.Exclude = []string{}
+		}
 		cfg.Servers[name] = srv
 	}
 
@@ -134,11 +188,13 @@ func Load(path string) (*Config, error) {
 }
 
 // FindConfigPath searches for a config file. Priority:
-//  1. explicit path (if non-empty)
-//  2. ./deploi.toml
-//  3. Platform-specific config directory:
-//     Linux/macOS: ~/.config/deploi/config.toml
+//  1. -c, --config explicit path
+//  2. ./deploi.toml (current directory)
+//  3. Platform config directory:
+//     Linux/macOS: ~/.config/deploi/config.toml  (XDG)
 //     Windows:     %APPDATA%/deploi/config.toml
+//  4. ~/.deploi/config.toml (home subdirectory — universal fallback)
+//  5. ~/.deploi.toml (home file — legacy fallback)
 func FindConfigPath(explicit string) (string, error) {
 	if explicit != "" {
 		if _, err := os.Stat(explicit); err != nil {
@@ -147,12 +203,19 @@ func FindConfigPath(explicit string) (string, error) {
 		return explicit, nil
 	}
 
+	home, _ := os.UserHomeDir()
 	candidates := []string{"deploi.toml"}
 
 	// Platform-specific config directory
-	path := PlatformConfigPath()
-	if path != "" {
-		candidates = append(candidates, path)
+	if p := PlatformConfigPath(); p != "" {
+		candidates = append(candidates, p)
+	}
+
+	// Home subdirectory (works on all platforms — Linux, macOS, Windows)
+	if home != "" {
+		candidates = append(candidates, filepath.Join(home, ".deploi", "config.toml"))
+		// Home file fallback
+		candidates = append(candidates, filepath.Join(home, ".deploi.toml"))
 	}
 
 	for _, p := range candidates {
@@ -161,33 +224,33 @@ func FindConfigPath(explicit string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("no config file found. Searched: %s", strings.Join(candidates, ", "))
+	return "", fmt.Errorf("no config file found. Searched:\n  %s", strings.Join(candidates, "\n  "))
 }
 
 // PlatformConfigPath returns the platform-specific config file path.
+// Linux/macOS: ~/.config/deploi/config.toml (XDG spec)
+// Windows:     %APPDATA%/deploi/config.toml
 func PlatformConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
 	if runtime.GOOS == "windows" {
+		// Windows: %APPDATA% first, fallback to USERPROFILE
 		appData := os.Getenv("APPDATA")
 		if appData == "" {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return ""
-			}
 			appData = filepath.Join(home, "AppData", "Roaming")
 		}
 		return filepath.Join(appData, "deploi", "config.toml")
 	}
 
-	// Linux / macOS: XDG spec
+	// Linux / macOS: XDG_CONFIG_HOME, fallback to ~/.config
 	xdg := os.Getenv("XDG_CONFIG_HOME")
-	if xdg == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		return filepath.Join(home, ".config", "deploi", "config.toml")
+	if xdg != "" {
+		return filepath.Join(xdg, "deploi", "config.toml")
 	}
-	return filepath.Join(xdg, "deploi", "config.toml")
+	return filepath.Join(home, ".config", "deploi", "config.toml")
 }
 
 // DefaultExample returns a default config file content as a string.
@@ -195,11 +258,16 @@ func DefaultExample() string {
 	return `# deploi.toml — v0id00/deploi configuration
 # Multi-server file sync and deploy tool.
 #
-# Copy this file to ./deploi.toml or ~/.config/deploi/config.toml
+# Copy this file to one of these locations:
+#   ./deploi.toml                    (project-level)
+#   ~/.config/deploi/config.toml     (Linux/macOS — XDG)
+#   %APPDATA%/deploi/config.toml     (Windows)
+#   ~/.deploi/config.toml            (universal home dir)
+#   ~/.deploi.toml                   (legacy fallback)
 
 [defaults]
 # Connection / execution
-timeout = 30
+timeout = 300
 concurrency = 5
 dry_run = false
 
@@ -223,9 +291,31 @@ remote_path = "/home/deploy/www/"
 # Rsync binary (default: "rsync")
 rsync_bin = "rsync"
 
+# Skip the diff preview before deploy (default: show preview)
+no_preview = false
+
 # Default filter (applied when no CLI flag is given)
 server = ""
 tags = ""
+
+# Exclude patterns (like .gitignore). Auto-excluded if .gitignore exists.
+# exclude = [".git", "node_modules", "*.log", ".env"]
+
+# Honour .gitignore when selecting files (default: true)
+# respect_gitignore = true
+
+# Default profile (optional)
+# profile = "full"
+
+# --- Profiles ---
+# Named deploy profiles for quick reuse.
+# [profiles.full]
+# method = "git-diff"
+# remote_path = "/var/www/project/"
+# 
+# [profiles.assets]
+# method = "all"
+# paths = ["public/build/", "public/assets/"]
 
 # --- Servers ---
 
@@ -233,25 +323,27 @@ tags = ""
 host = "web1.example.com"
 port = 22
 user = "deploy"
-# password = ""          # Optional: use SSH key instead
-# key_file = "~/.ssh/id_ed25519"
-method = "rsync"         # rsync, sftp, ssh
+method = "rsync"
 tags = ["prod", "web"]
 remote_path = "/var/www/project/"
 rsync_options = "-avz --delete"
 
-[servers.prod-web-2]
-host = "web2.example.com"
-port = 22
-user = "deploy"
-tags = ["prod", "web"]
+# Pre/post deploy hooks (SSH commands)
+# [servers.prod-web-1.hooks]
+# pre = [
+#   "php artisan down",
+#   "rm -rf var/cache/*"
+# ]
+# post = [
+#   "php artisan migrate --force",
+#   "php artisan up"
+# ]
 
 [servers.staging]
 host = "staging.example.com"
 port = 22
 user = "deploy"
 tags = ["staging"]
-# remote_path = "/home/deploy/staging/"  # overrides default
 `
 }
 
@@ -262,4 +354,17 @@ func ExpandPath(path string) string {
 		return filepath.Join(home, path[2:])
 	}
 	return path
+}
+
+// HistoryDir returns the deploi history directory (~/.deploi/history/).
+func HistoryDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("home dir: %w", err)
+	}
+	dir := filepath.Join(home, ".deploi", "history")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("create history dir: %w", err)
+	}
+	return dir, nil
 }

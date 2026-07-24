@@ -2,9 +2,9 @@
 package transfer
 
 import (
+	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,7 +27,6 @@ const (
 	OpSync                  // bidirectional / dry-run comparison
 )
 
-// String returns the human-readable name.
 func (o Operation) String() string {
 	switch o {
 	case OpPush:
@@ -43,12 +42,14 @@ func (o Operation) String() string {
 
 // TransferResult holds the outcome of a single file transfer.
 type TransferResult struct {
-	Server  string `json:"server"`
-	Files   int    `json:"files"`
-	Bytes   int64  `json:"bytes"`
-	Elapsed string `json:"elapsed"`
-	Status  string `json:"status"` // "ok" or "error"
-	Error   string `json:"error,omitempty"`
+	Server     string `json:"server"`
+	Files      int    `json:"files"`
+	Bytes      int64  `json:"bytes"`
+	Elapsed    string `json:"elapsed"`
+	Status     string `json:"status"` // "ok" or "error"
+	Error      string `json:"error,omitempty"`
+	HooksPre   int    `json:"hooks_pre,omitempty"`
+	HooksPost  int    `json:"hooks_post,omitempty"`
 }
 
 // RunConfig holds parameters for a transfer run.
@@ -65,6 +66,11 @@ type RunConfig struct {
 	ShowBar     bool
 	Quiet       bool
 	RsyncOpts   string // additional rsync options
+	Exclude     []string
+	NoGitignore bool  // disable .gitignore auto-detection
+	GitDir      string // git directory for .gitignore detection
+	BaseDir     string // base directory for relative path resolution (default: cwd)
+	Preview     bool  // show diff preview before transfer
 }
 
 // Run executes the transfer on all matching servers.
@@ -76,7 +82,6 @@ func Run(servers []config.Server, cfg RunConfig) []TransferResult {
 		cfg.Timeout = 300
 	}
 
-	// Filter servers
 	conns := filterServers(servers, cfg.ServerRegex, cfg.Tags)
 	if len(conns) == 0 {
 		return []TransferResult{{
@@ -85,7 +90,6 @@ func Run(servers []config.Server, cfg RunConfig) []TransferResult {
 		}}
 	}
 
-	// Build progress bar
 	var bar *progressbar.ProgressBar
 	if cfg.ShowBar && !cfg.Quiet {
 		bar = progressbar.NewOptions(len(conns),
@@ -98,6 +102,9 @@ func Run(servers []config.Server, cfg RunConfig) []TransferResult {
 			progressbar.OptionSetRenderBlankState(true),
 		)
 	}
+
+	// Build combined exclude list: config excludes + .gitignore
+	exclude := buildExcludeList(cfg)
 
 	var mu sync.Mutex
 	results := make([]TransferResult, 0, len(conns))
@@ -113,7 +120,7 @@ func Run(servers []config.Server, cfg RunConfig) []TransferResult {
 			defer func() { <-sem }()
 
 			start := time.Now()
-			r := executeOnServer(s, cfg)
+			r := executeOnServer(s, cfg, exclude)
 			r.Server = s.Name
 			r.Elapsed = time.Since(start).Round(time.Millisecond).String()
 
@@ -130,32 +137,148 @@ func Run(servers []config.Server, cfg RunConfig) []TransferResult {
 	return results
 }
 
-// executeOnServer runs the transfer on a single server.
-func executeOnServer(srv config.Server, cfg RunConfig) TransferResult {
+// executeOnServer runs the full deploy pipeline: hooks → transfer → hooks.
+func executeOnServer(srv config.Server, cfg RunConfig, exclude []string) TransferResult {
+	// Pre-hooks
+	if srv.Hooks != nil && len(srv.Hooks.Pre) > 0 && !cfg.DryRun {
+		for _, cmd := range srv.Hooks.Pre {
+			out, err := runSSH(srv, cmd)
+			if err != nil {
+				return TransferResult{
+					Status: "error",
+					Error:  fmt.Sprintf("pre-hook %q failed: %v\n%s", cmd, err, out),
+				}
+			}
+		}
+	}
+
+	// Transfer
+	var r TransferResult
 	switch srv.Method {
 	case "rsync":
-		return runRsync(srv, cfg)
+		r = runRsync(srv, cfg, exclude)
 	case "sftp", "ssh":
-		return runSCP(srv, cfg)
+		r = runSCP(srv, cfg)
 	default:
 		return TransferResult{Status: "error", Error: fmt.Sprintf("unknown method: %s", srv.Method)}
 	}
+
+	if r.Status != "ok" {
+		return r
+	}
+
+	// Count hooks
+	if srv.Hooks != nil {
+		r.HooksPre = len(srv.Hooks.Pre)
+		r.HooksPost = len(srv.Hooks.Post)
+	}
+
+	// Post-hooks
+	if srv.Hooks != nil && len(srv.Hooks.Post) > 0 && !cfg.DryRun {
+		for _, cmd := range srv.Hooks.Post {
+			out, err := runSSH(srv, cmd)
+			if err != nil {
+				return TransferResult{
+					Status: "error",
+					Error:  fmt.Sprintf("post-hook %q failed: %v\n%s", cmd, err, out),
+					HooksPre: r.HooksPre,
+				}
+			}
+		}
+	}
+
+	return r
+}
+
+// buildExcludeList combines config excludes, .gitignore patterns, and server excludes.
+func buildExcludeList(cfg RunConfig) []string {
+	excludeMap := make(map[string]bool)
+	var list []string
+
+	// Config excludes
+	for _, e := range cfg.Exclude {
+		if !excludeMap[e] {
+			excludeMap[e] = true
+			list = append(list, e)
+		}
+	}
+
+	// .gitignore patterns (if enabled)
+	if !cfg.NoGitignore {
+		gitDir := cfg.GitDir
+		if gitDir == "" {
+			gitDir, _ = os.Getwd()
+		}
+		patterns := readGitignore(gitDir)
+		for _, p := range patterns {
+			if !excludeMap[p] {
+				excludeMap[p] = true
+				list = append(list, p)
+			}
+		}
+	}
+
+	return list
+}
+
+// readGitignore reads .gitignore and .gitignore patterns, returning rsync --exclude args.
+func readGitignore(dir string) []string {
+	var patterns []string
+	gitignorePath := filepath.Join(dir, ".gitignore")
+	f, err := os.Open(gitignorePath)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		// Skip empty lines, comments, and negations
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
+			continue
+		}
+		// Remove trailing slash (directory markers in .gitignore)
+		line = strings.TrimSuffix(line, "/")
+		// Convert leading / (root-relative) to rsync format
+		line = strings.TrimPrefix(line, "/")
+		if line != "" {
+			patterns = append(patterns, line)
+		}
+	}
+	return patterns
 }
 
 // runRsync executes the transfer using rsync over SSH.
-func runRsync(srv config.Server, cfg RunConfig) TransferResult {
+func runRsync(srv config.Server, cfg RunConfig, exclude []string) TransferResult {
 	if len(cfg.LocalFiles) == 0 {
 		return TransferResult{Status: "error", Error: "no files to transfer"}
 	}
 
-	// Build remote destination
+	// Resolve base directory for relative paths
+	baseDir := cfg.BaseDir
+	if baseDir == "" {
+		baseDir, _ = os.Getwd()
+	}
+
+	// Convert absolute paths to relative (rsync needs relative for proper -R behavior)
+	relFiles := make([]string, 0, len(cfg.LocalFiles))
+	for _, f := range cfg.LocalFiles {
+		rel, err := filepath.Rel(baseDir, f)
+		if err != nil {
+			rel = f // fallback to original
+		}
+		// Ensure Unix-style relative paths for rsync
+		rel = filepath.ToSlash(rel)
+		relFiles = append(relFiles, rel)
+	}
+
 	remoteDir := cfg.RemoteDir
 	if srv.RemotePath != "" {
 		remoteDir = srv.RemotePath
 	}
 	remote := fmt.Sprintf("%s:%s", srv.Addr(), remoteDir)
 
-	// Build rsync args
 	args := []string{"-avzR"}
 	if cfg.DryRun {
 		args = append(args, "--dry-run")
@@ -164,24 +287,28 @@ func runRsync(srv config.Server, cfg RunConfig) TransferResult {
 		args = append(args, strings.Fields(cfg.RsyncOpts)...)
 	}
 
-	// Add SSH options
+	// Add exclude patterns
+	for _, ex := range exclude {
+		args = append(args, "--exclude", ex)
+	}
+
+	// Add server-level exclude
+	for _, ex := range srv.Exclude {
+		args = append(args, "--exclude", ex)
+	}
+
+	// SSH options
 	sshOpt := buildSSHOpts(srv)
 	if sshOpt != "" {
 		args = append(args, "-e", sshOpt)
 	}
 
-	// If we have a remote_path per server, we need to handle the target correctly
-	// For push: local files → remote:remoteDir
-	// For pull: remote:remoteDir/files → local
 	switch cfg.Operation {
 	case OpPush:
-		// Add source files
-		args = append(args, cfg.LocalFiles...)
+		args = append(args, relFiles...)
 		args = append(args, remote)
 	case OpPull:
-		// Remote as source, local as dest
-		for _, f := range cfg.LocalFiles {
-			// When pulling, the files are on the remote side
+		for _, f := range relFiles {
 			pullSrc := fmt.Sprintf("%s:%s%s", srv.Addr(), remoteDir, f)
 			args = append(args, pullSrc)
 		}
@@ -192,7 +319,7 @@ func runRsync(srv config.Server, cfg RunConfig) TransferResult {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "rsync", args...)
-
+	cmd.Dir = baseDir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -201,16 +328,15 @@ func runRsync(srv config.Server, cfg RunConfig) TransferResult {
 		return TransferResult{Status: "error", Error: fmt.Sprintf("rsync: %v\n%s", err, string(output))}
 	}
 
-	if !cfg.Quiet {
+	if !cfg.Quiet && !cfg.DryRun {
 		os.Stderr.Write(output)
 	}
 
-	// Count transferred files from output
 	fileCount := parseRsyncOutput(string(output))
 	return TransferResult{Status: "ok", Files: fileCount}
 }
 
-// runSCP executes the transfer using SCP (when rsync is not available).
+// runSCP executes the transfer using SCP.
 func runSCP(srv config.Server, cfg RunConfig) TransferResult {
 	if len(cfg.LocalFiles) == 0 {
 		return TransferResult{Status: "error", Error: "no files to transfer"}
@@ -232,7 +358,6 @@ func runSCP(srv config.Server, cfg RunConfig) TransferResult {
 		keyPath := config.ExpandPath(srv.KeyFile)
 		args = append(args, "-i", keyPath)
 	}
-
 	if cfg.DryRun {
 		args = append(args, "--dry-run")
 	}
@@ -249,7 +374,6 @@ func runSCP(srv config.Server, cfg RunConfig) TransferResult {
 	}
 
 	cmd := exec.CommandContext(ctx, "scp", args...)
-
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -338,7 +462,6 @@ func parseRsyncOutput(output string) int {
 			strings.HasPrefix(line, "deleting") {
 			continue
 		}
-		// Skip directory entries (trailing /)
 		if strings.HasSuffix(line, "/") {
 			continue
 		}
@@ -355,20 +478,16 @@ func filterServers(servers []config.Server, regex string, tags []string) []confi
 
 	var filtered []config.Server
 	for _, s := range servers {
-		// Regex filter
 		if regex != "" {
 			if matched, _ := filepath.Match(regex, s.Name); !matched {
 				continue
 			}
 		}
-
-		// Tags filter (OR logic)
 		if len(tags) > 0 {
 			if !hasAnyTag(s.Tags, tags) {
 				continue
 			}
 		}
-
 		filtered = append(filtered, s)
 	}
 	return filtered
@@ -385,7 +504,7 @@ func hasAnyTag(serverTags, filterTags []string) bool {
 	return false
 }
 
-// RunCommands executes arbitrary SSH commands on servers (for remote operations).
+// RunCommands executes arbitrary SSH commands on servers.
 func RunCommands(servers []config.Server, commands []string, cfg RunConfig) []TransferResult {
 	conns := filterServers(servers, cfg.ServerRegex, cfg.Tags)
 	if len(conns) == 0 {
@@ -403,14 +522,11 @@ func RunCommands(servers []config.Server, commands []string, cfg RunConfig) []Tr
 	for _, srv := range conns {
 		wg.Add(1)
 		sem <- struct{}{}
-
 		go func(s config.Server) {
 			defer wg.Done()
 			defer func() { <-sem }()
-
 			start := time.Now()
 			r := TransferResult{Server: s.Name, Status: "ok"}
-
 			for _, cmd := range commands {
 				if cfg.DryRun {
 					continue
@@ -422,14 +538,12 @@ func RunCommands(servers []config.Server, commands []string, cfg RunConfig) []Tr
 					break
 				}
 			}
-
 			r.Elapsed = time.Since(start).Round(time.Millisecond).String()
 			mu.Lock()
 			results = append(results, r)
 			mu.Unlock()
 		}(srv)
 	}
-
 	wg.Wait()
 	return results
 }
@@ -439,52 +553,10 @@ func EnsureRemoteDirs(srv config.Server, dirs []string) error {
 	if len(dirs) == 0 {
 		return nil
 	}
-
-	keyFile := srv.KeyFile
-	if keyFile == "" {
-		home, _ := os.UserHomeDir()
-		keyFile = filepath.Join(home, ".ssh", "id_ed25519")
-		if _, err := os.Stat(keyFile); err != nil {
-			keyFile = filepath.Join(home, ".ssh", "id_rsa")
-		}
-	}
-	keyFile = config.ExpandPath(keyFile)
-
-	key, err := os.ReadFile(keyFile)
+	out, err := runSSH(srv, "mkdir -p "+strings.Join(dirs, " "))
 	if err != nil {
-		return fmt.Errorf("read SSH key: %w", err)
+		return fmt.Errorf("mkdir remote: %w\n%s", err, out)
 	}
-
-	signer, err := ssh.ParsePrivateKey(key)
-	if err != nil {
-		return fmt.Errorf("parse SSH key: %w", err)
-	}
-
-	hostPort := fmt.Sprintf("%s:%d", srv.Host, srv.Port)
-	client, err := ssh.Dial("tcp", hostPort, &ssh.ClientConfig{
-		User:            srv.User,
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec
-		Timeout:         10 * time.Second,
-	})
-	if err != nil {
-		return fmt.Errorf("SSH dial: %w", err)
-	}
-	defer client.Close()
-
-	session, err := client.NewSession()
-	if err != nil {
-		return fmt.Errorf("SSH session: %w", err)
-	}
-	defer session.Close()
-
-	// Create all directories with mkdir -p
-	cmd := "mkdir -p " + strings.Join(dirs, " ")
-	_, err = session.CombinedOutput(cmd)
-	if err != nil {
-		return fmt.Errorf("mkdir remote: %w", err)
-	}
-
 	return nil
 }
 
@@ -494,7 +566,6 @@ func ListRemoteFiles(srv config.Server, remotePath string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	files := strings.Split(strings.TrimSpace(out), "\n")
 	var result []string
 	for _, f := range files {
@@ -505,28 +576,33 @@ func ListRemoteFiles(srv config.Server, remotePath string) ([]string, error) {
 	return result, nil
 }
 
-// IsTerminal checks if stderr is a terminal (for progress bar).
+// IsTerminal checks if stderr is a terminal.
 func IsTerminal() bool {
 	stat, _ := os.Stderr.Stat()
 	return (stat.Mode() & os.ModeCharDevice) != 0
 }
 
-// CopyFile copies a file locally (used for SFTP-based transfers as fallback).
-func CopyFile(src, dst string) error {
-	s, err := os.Open(src)
-	if err != nil {
-		return err
+// GitDiffSummary generates a summary of what will be transferred.
+func GitDiffSummary(files []string, gitDir string) string {
+	if gitDir == "" {
+		gitDir, _ = os.Getwd()
 	}
-	defer s.Close()
+	if len(files) == 0 {
+		return "(no files)"
+	}
 
-	d, err := os.Create(dst)
+	// Run git diff --stat on the selected files
+	args := append([]string{"-C", gitDir, "diff", "--stat"}, files...)
+	cmd := exec.Command("git", args...)
+	out, err := cmd.Output()
 	if err != nil {
-		return err
+		// Fallback: show file list
+		var b strings.Builder
+		for _, f := range files {
+			rel, _ := filepath.Rel(gitDir, f)
+			b.WriteString(rel + "\n")
+		}
+		return b.String()
 	}
-	defer d.Close()
-
-	if _, err := io.Copy(d, s); err != nil {
-		return err
-	}
-	return d.Sync()
+	return string(out)
 }

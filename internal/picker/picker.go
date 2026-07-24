@@ -20,7 +20,8 @@ const (
 	SourceGitDiff                     // Files changed in working tree
 	SourceGitCommit                   // Files in a specific commit
 	SourceGitBranch                   // Files changed between branches
-	SourceFZF                         // fzf interactive picker
+	SourceFZF                         // fzf interactive file picker
+	SourceFZFCommit                   // fzf commit picker → files in selected commit
 	SourceEditor                      // Editor-based selection
 	SourceAll                         // All files in a directory
 )
@@ -38,6 +39,8 @@ func (s SourceType) String() string {
 		return "git-branch-diff"
 	case SourceFZF:
 		return "fzf"
+	case SourceFZFCommit:
+		return "fzf-commit"
 	case SourceEditor:
 		return "editor"
 	case SourceAll:
@@ -49,13 +52,17 @@ func (s SourceType) String() string {
 
 // PickConfig holds parameters for file selection.
 type PickConfig struct {
-	Source   SourceType
-	Paths    []string // explicit paths (for SourceManual / SourceAll)
-	GitDir   string   // git working directory (default: cwd)
-	Commit   string   // commit hash or ref (for SourceGitCommit)
-	Branch   string   // branch name (for SourceGitBranch)
-	Editor   string   // editor binary
-	BaseDir  string   // base directory for relative paths
+	Source         SourceType
+	Paths          []string // explicit paths (for SourceManual / SourceAll)
+	GitDir         string   // git working directory (default: cwd)
+	Commit         string   // commit hash or ref (for SourceGitCommit)
+	Branch         string   // branch name (for SourceGitBranch)
+	PickCommit     bool     // interactive commit selection via fzf (for SourceGitCommit)
+	PickFiles      bool     // interactive file selection via fzf (for SourceGitDiff)
+	Editor         string   // editor binary
+	BaseDir        string   // base directory for relative paths
+	IncludeStaged  bool     // include staged files in git-diff (default: true)
+	IncludeUntracked bool   // include untracked files in git-diff (default: true)
 }
 
 // FileSet holds the result of file selection.
@@ -83,13 +90,26 @@ func Pick(cfg PickConfig) (*FileSet, error) {
 	case SourceManual:
 		return pickManual(cfg.Paths, baseDir)
 	case SourceGitDiff:
-		return pickGitDiff(cfg.GitDir, baseDir)
+		if cfg.PickFiles {
+			// Redirect to fzf picker with git-diff candidates
+			fset, err := pickGitDiff(cfg.GitDir, baseDir, cfg.IncludeStaged, cfg.IncludeUntracked)
+			if err != nil {
+				return nil, err
+			}
+			return pickFZF(fset.Files, cfg.GitDir, baseDir)
+		}
+		return pickGitDiff(cfg.GitDir, baseDir, cfg.IncludeStaged, cfg.IncludeUntracked)
 	case SourceGitCommit:
+		if cfg.PickCommit {
+			return pickCommitFZF(cfg.GitDir, baseDir, cfg.Editor)
+		}
 		return pickGitCommit(cfg.GitDir, cfg.Commit, baseDir)
 	case SourceGitBranch:
 		return pickGitBranch(cfg.GitDir, cfg.Branch, baseDir)
 	case SourceFZF:
 		return pickFZF(cfg.Paths, cfg.GitDir, baseDir)
+	case SourceFZFCommit:
+		return pickCommitFZF(cfg.GitDir, baseDir, cfg.Editor)
 	case SourceEditor:
 		return pickEditor(cfg.Paths, cfg.Editor, baseDir)
 	case SourceAll:
@@ -134,8 +154,8 @@ func pickManual(paths []string, baseDir string) (*FileSet, error) {
 }
 
 // pickGitDiff returns files that have changed in the working tree.
-// It includes both staged and unstaged changes.
-func pickGitDiff(gitDir, baseDir string) (*FileSet, error) {
+// It includes staged, unstaged, and optionally untracked files.
+func pickGitDiff(gitDir, baseDir string, includeStaged, includeUntracked bool) (*FileSet, error) {
 	if gitDir == "" {
 		gitDir = baseDir
 	}
@@ -145,29 +165,40 @@ func pickGitDiff(gitDir, baseDir string) (*FileSet, error) {
 		return nil, fmt.Errorf("not a git repository: %s", gitDir)
 	}
 
-	// Get tracked file changes: unstaged changes
-	cmd := exec.Command("git", "-C", gitDir, "diff", "--name-only", "--diff-filter=ACDMRTUXB")
-	unstaged, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("git diff: %w", err)
+	all := make(map[string]struct{})
+
+	// Get unstaged changes (tracked files modified in working tree)
+	if out, err := exec.Command("git", "-C", gitDir, "diff", "--name-only", "--diff-filter=ACDMRTUXB").Output(); err == nil {
+		for _, f := range parseFileList(string(out)) {
+			all[f] = struct{}{}
+		}
 	}
 
-	// Get staged changes
-	cmd = exec.Command("git", "-C", gitDir, "diff", "--cached", "--name-only", "--diff-filter=ACDMRTUXB")
-	staged, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("git diff --cached: %w", err)
+	// Get staged changes (unless disabled)
+	if includeStaged {
+		if out, err := exec.Command("git", "-C", gitDir, "diff", "--cached", "--name-only", "--diff-filter=ACDMRTUXB").Output(); err == nil {
+			for _, f := range parseFileList(string(out)) {
+				all[f] = struct{}{}
+			}
+		}
 	}
 
-	// Merge and deduplicate
-	all := mergeFileLists(string(unstaged), string(staged))
+	// Get untracked files (unless disabled)
+	if includeUntracked {
+		if out, err := exec.Command("git", "-C", gitDir, "ls-files", "--others", "--exclude-standard").Output(); err == nil {
+			for _, f := range parseFileList(string(out)) {
+				all[f] = struct{}{}
+			}
+		}
+	}
+
 	if len(all) == 0 {
 		return nil, fmt.Errorf("no changed files found in working tree")
 	}
 
-	absFiles := make([]string, len(all))
-	for i, f := range all {
-		absFiles[i] = filepath.Join(gitDir, f)
+	absFiles := make([]string, 0, len(all))
+	for f := range all {
+		absFiles = append(absFiles, filepath.Join(gitDir, f))
 	}
 
 	return &FileSet{
@@ -286,16 +317,28 @@ func pickFZF(paths []string, gitDir, baseDir string) (*FileSet, error) {
 
 	candidates := paths
 	if len(candidates) == 0 && gitDir != "" {
-		// Use git diff output as candidates
-		diff, err := exec.Command("git", "-C", gitDir, "diff", "--name-only", "--diff-filter=ACDMRTUXB").Output()
-		if err == nil {
-			candidates = parseFileList(string(diff))
+		// Use git changes as candidates (staged + unstaged + untracked)
+		all := make(map[string]struct{})
+
+		if out, err := exec.Command("git", "-C", gitDir, "diff", "--name-only", "--diff-filter=ACDMRTUXB").Output(); err == nil {
+			for _, f := range parseFileList(string(out)) {
+				all[f] = struct{}{}
+			}
 		}
-		staged, err := exec.Command("git", "-C", gitDir, "diff", "--cached", "--name-only", "--diff-filter=ACDMRTUXB").Output()
-		if err == nil {
-			candidates = append(candidates, parseFileList(string(staged))...)
+		if out, err := exec.Command("git", "-C", gitDir, "diff", "--cached", "--name-only", "--diff-filter=ACDMRTUXB").Output(); err == nil {
+			for _, f := range parseFileList(string(out)) {
+				all[f] = struct{}{}
+			}
 		}
-		candidates = uniqueStrings(candidates)
+		if out, err := exec.Command("git", "-C", gitDir, "ls-files", "--others", "--exclude-standard").Output(); err == nil {
+			for _, f := range parseFileList(string(out)) {
+				all[f] = struct{}{}
+			}
+		}
+
+		for f := range all {
+			candidates = append(candidates, f)
+		}
 	}
 
 	if len(candidates) == 0 {
@@ -346,16 +389,20 @@ func pickEditor(paths []string, editor, baseDir string) (*FileSet, error) {
 
 	candidates := paths
 	if len(candidates) == 0 {
-		// Try git diff
-		diff, err := exec.Command("git", "diff", "--name-only", "--diff-filter=ACDMRTUXB").Output()
-		if err == nil {
-			candidates = parseFileList(string(diff))
+		// Git changes (staged + unstaged + untracked)
+		all := make(map[string]struct{})
+
+		if out, err := exec.Command("git", "diff", "--name-only", "--diff-filter=ACDMRTUXB").Output(); err == nil {
+			for _, f := range parseFileList(string(out)) { all[f] = struct{}{} }
 		}
-		staged, err := exec.Command("git", "diff", "--cached", "--name-only", "--diff-filter=ACDMRTUXB").Output()
-		if err == nil {
-			candidates = append(candidates, parseFileList(string(staged))...)
+		if out, err := exec.Command("git", "diff", "--cached", "--name-only", "--diff-filter=ACDMRTUXB").Output(); err == nil {
+			for _, f := range parseFileList(string(out)) { all[f] = struct{}{} }
 		}
-		candidates = uniqueStrings(candidates)
+		if out, err := exec.Command("git", "ls-files", "--others", "--exclude-standard").Output(); err == nil {
+			for _, f := range parseFileList(string(out)) { all[f] = struct{}{} }
+		}
+
+		for f := range all { candidates = append(candidates, f) }
 	}
 
 	if len(candidates) == 0 {
@@ -463,6 +510,135 @@ func pickAll(paths []string, baseDir string) (*FileSet, error) {
 		AbsDir: baseDir,
 		Count:  len(allFiles),
 		Label:  fmt.Sprintf("all files (%d files)", len(allFiles)),
+	}, nil
+}
+
+// pickCommitFZF shows git log in fzf to let user pick a commit,
+// then returns the files from that commit (optionally filtered through fzf again).
+func pickCommitFZF(gitDir, baseDir, editor string) (*FileSet, error) {
+	if gitDir == "" {
+		gitDir = baseDir
+	}
+
+	if !isGitRepo(gitDir) {
+		return nil, fmt.Errorf("not a git repository: %s", gitDir)
+	}
+
+	// Check if fzf is available
+	_, fzfErr := exec.LookPath("fzf")
+	hasFZF := fzfErr == nil
+
+	// Get recent commits (last 50)
+	cmd := exec.Command("git", "-C", gitDir, "log", "--oneline", "-50")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git log: %w", err)
+	}
+
+	commits := parseFileList(string(out))
+	if len(commits) == 0 {
+		return nil, fmt.Errorf("no commits found")
+	}
+
+	// Let user pick a commit
+	var selectedCommit string
+	if hasFZF {
+		input := strings.Join(commits, "\n")
+		cmd = exec.Command("fzf", "--prompt=Select commit> ", "--no-multi")
+		cmd.Stdin = strings.NewReader(input)
+		cmd.Stderr = os.Stderr
+		out, err = cmd.Output()
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 130 {
+				return nil, fmt.Errorf("selection cancelled")
+			}
+			return nil, fmt.Errorf("fzf commit picker: %w", err)
+		}
+		selectedCommit = strings.TrimSpace(string(out))
+	} else {
+		// Fallback: editor mode for commit selection
+		fmt.Fprintf(os.Stderr, "  fzf not found. Open editor to select commit.\n")
+		header := "# Lines with '#' are ignored.\n"
+		header += "# Pick one commit hash (delete all others):\n\n"
+		content := header + strings.Join(commits, "\n") + "\n"
+		tmpFile, _ := os.CreateTemp("", "deploi-commit-*.txt")
+		tmpPath := tmpFile.Name()
+		defer os.Remove(tmpPath)
+		os.WriteFile(tmpPath, []byte(content), 0644)
+		tmpFile.Close()
+
+		e := editor
+		if e == "" {
+			e = findEditor()
+		}
+		editCmd := exec.Command(e, tmpPath)
+		editCmd.Stdin = os.Stdin
+		editCmd.Stdout = os.Stdout
+		editCmd.Stderr = os.Stderr
+		if err := editCmd.Run(); err != nil {
+			return nil, fmt.Errorf("editor: %w", err)
+		}
+		data, _ := os.ReadFile(tmpPath)
+		selected := parseEditorOutput(string(data))
+		if len(selected) == 0 {
+			return nil, fmt.Errorf("no commit selected")
+		}
+		// Extract hash (first word of the selected line)
+		selectedCommit = strings.Fields(selected[0])[0]
+	}
+
+	// Extract commit hash (format: "abc1234 Commit message")
+	hash := strings.Fields(selectedCommit)[0]
+
+	// Get files in that commit
+	args := []string{"-C", gitDir, "diff-tree", "--no-commit-id", "--name-only", "-r"}
+	if _, err := exec.Command("git", "-C", gitDir, "rev-parse", hash+"~1").Output(); err != nil {
+		args = append(args, "--root")
+	}
+	args = append(args, hash)
+	cmd = exec.Command("git", args...)
+	out, err = cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git diff-tree %s: %w", hash, err)
+	}
+
+	files := parseFileList(string(out))
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no files found in commit %s", hash)
+	}
+
+	// If fzf available, let user pick which files from the commit to transfer
+	if hasFZF && len(files) > 1 {
+		input := strings.Join(files, "\n")
+		cmd = exec.Command("fzf", "--multi", "--prompt=Select files from commit (Tab to multi-select)> ")
+		cmd.Stdin = strings.NewReader(input)
+		cmd.Stderr = os.Stderr
+		out, err = cmd.Output()
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 130 {
+				return nil, fmt.Errorf("selection cancelled")
+			}
+			// On error (e.g. no selection with Enter), use all files
+			// proceed with full file list
+		} else {
+			selected := parseFileList(string(out))
+			if len(selected) > 0 {
+				files = selected
+			}
+		}
+	}
+
+	absFiles := make([]string, len(files))
+	for i, f := range files {
+		absFiles[i] = filepath.Join(gitDir, f)
+	}
+
+	return &FileSet{
+		Source: SourceFZFCommit,
+		Files:  absFiles,
+		AbsDir: gitDir,
+		Count:  len(files),
+		Label:  fmt.Sprintf("fzf-commit %s (%d files)", hash[:8], len(files)),
 	}, nil
 }
 
