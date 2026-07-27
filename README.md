@@ -119,20 +119,42 @@ tags = ["staging"]
 
 See `config.toml.example` for a full reference.
 
-## File Selection Methods
+## File Selection
 
-| Method | Command | Description |
-|--------|---------|-------------|
-| manual | `deploi push file.php` | Explicit file paths |
-| git-diff | `deploi push -m git-diff` | Changed files (staged+unstaged+untracked) |
-| git-diff + pick | `deploi push -m git-diff -P` | Pick changed files via fzf |
-| git-commit | `deploi push -m git-commit -P` | Interactive commit pick via fzf |
-| git-commit | `deploi push -m git-commit --commit HASH` | Files in a specific commit |
-| fzf-commit | `deploi push -m fzf-commit` | Pick commit then files via fzf |
-| git-branch | `deploi push -m git-branch --branch NAME` | Branch diff |
-| fzf | `deploi push -m fzf` | Interactive fzf picker |
-| editor | `deploi push -m editor` | Editor-based selection |
-| all | `deploi push -m all ./dir/` | All files in a directory |
+Two independent parameters control file selection:
+
+| Parameter | Role | Values |
+|-----------|------|--------|
+| `--select` | **How** to pick files | `manual`, `fzf`, `editor`, `all` |
+| `--filter` | **What** files to show | `git-diff`, `git-commit`, `git-branch`, `path` |
+
+| Select + Filter | Command | Description |
+|-----------------|---------|-------------|
+| `select fzf + filter git-diff` | `deploi push --select fzf --filter git-diff` | Pick changed files via fzf |
+| `select fzf + filter path` | `deploi push --select fzf --filter path .` | Pick all files via fzf (from current dir) |
+| `select fzf + filter git-commit` | `deploi push --select fzf --filter git-commit` | Pick commit then files via fzf |
+| `select manual + filter git-diff` | `deploi push --filter git-diff` | Auto-select changed files |
+| `select manual + filter git-commit` | `deploi push --filter git-commit --commit HASH` | Files in a commit |
+| `select manual + filter git-branch` | `deploi push --filter git-branch --branch NAME` | Branch diff |
+| `select editor + filter path` | `deploi push --select editor` | Editor-based selection |
+| `select all + filter path` | `deploi push --select all --filter path ./dir/` | All files in a directory |
+
+### Legacy `-m` (still works)
+
+| `-m` value | Equivalent `--select` + `--filter` |
+|------------|-----------------------------------|
+| `-m manual file.php` | `--select manual --filter path file.php` |
+| `-m git-diff` | `--select manual --filter git-diff` |
+| `-m git-diff -P` | `--select fzf --filter git-diff` |
+| `-m git-commit --commit HASH` | `--select manual --filter git-commit --commit HASH` |
+| `-m git-commit -P` | `--select fzf --filter git-commit` |
+| `-m git-branch --branch NAME` | `--select manual --filter git-branch --branch NAME` |
+| `-m fzf` | `--select fzf --filter path` |
+| `-m fzf-commit` | `--select fzf --filter git-commit` |
+| `-m editor` | `--select editor --filter path` |
+| `-m all ./dir/` | `--select all --filter path ./dir/` |
+
+Both styles work and can be mixed. The new `--select`/`--filter` flags are preferred.
 
 ## Commands
 
@@ -159,8 +181,10 @@ See `config.toml.example` for a full reference.
 | `-t, --tags` | Filter by tags (comma-separated, OR) |
 | `-S, --pick-server` | Pick servers interactively via fzf (also works with -t) |
 | `-c, --config` | Config file path |
-| `-m, --method` | File selection method |
-| `-P, --pick` | Pick commit interactively via fzf |
+| `-m, --method` | File selection method (legacy: manual, git-diff, git-commit, git-branch, fzf, fzf-commit, editor, all) |
+| `--select` | Selection mode (how): manual, fzf, editor, all |
+| `--filter` | Filter mode (what): git-diff, git-commit, git-branch, path |
+| `-P, --pick` | Interactive commit pick via fzf |
 | `--profile` | Use a named profile from config |
 | `--dry-run` | Preview changes without transferring |
 | `--no-preview` | Skip diff preview confirmation |

@@ -117,18 +117,19 @@ deploi config generate -o -
 
 ## File Selection Methods
 
-| Method | CLI | Description |
-|--------|-----|-------------|
-| manual | `push file.php` | Explicit paths |
-| git-diff | `-m git-diff` | Changed files (staged+unstaged+untracked) |
-| git-diff + pick | `-m git-diff -P` | Pick changed files via fzf |
-| git-commit | `-m git-commit --commit HASH` | Files in commit |
-| git-commit + pick | `-m git-commit -P` | Interactive commit pick via fzf |
-| fzf-commit | `-m fzf-commit` | Pick commit then files via fzf |
-| git-branch | `-m git-branch --branch NAME` | Branch diff |
-| fzf | `-m fzf` | Interactive fzf picker |
-| editor | `-m editor` | Editor selection |
-| all | `-m all [dir]` | All files recursive |
+Two parameters:
+- `--select <mode>` — how to pick: `manual`, `fzf`, `editor`, `all`
+- `--filter <type>` — what to show: `git-diff`, `git-commit`, `git-branch`, `path`
+
+| `--select` + `--filter` | Example |
+|-------------------------|---------|
+| `select fzf + filter git-diff` | `--select fzf --filter git-diff` |
+| `select fzf + filter path` | `--select fzf --filter path .` |
+| `select manual + filter git-diff` | `--filter git-diff` |
+| `select fzf + filter git-commit` | `--select fzf --filter git-commit` |
+| `select all + filter path` | `--select all --filter path ./dir/` |
+
+Legacy `-m` still works (see README for mapping).
 
 ## Key Flags
 
@@ -137,7 +138,9 @@ deploi config generate -o -
 | `-s, --server` | Glob filter for servers |
 | `-t, --tags` | Tag filter (OR) |
 | `-S, --pick-server` | Pick servers interactively via fzf |
-| `-m, --method` | File selection method |
+| `-m, --method` | File selection method (legacy) |
+| `--select` | Selection mode: manual, fzf, editor, all |
+| `--filter` | Filter: git-diff, git-commit, git-branch, path |
 | `-P, --pick` | Interactive commit pick |
 | `--profile` | Named deploy profile |
 | `--dry-run` | Preview only |
