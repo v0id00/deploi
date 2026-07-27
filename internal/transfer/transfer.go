@@ -13,9 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/briandowns/spinner"
 	"github.com/v0id00/deploi/internal/config"
-
-	"github.com/schollz/progressbar/v3"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -94,21 +93,14 @@ func Run(servers []config.Server, cfg RunConfig) []TransferResult {
 		}}
 	}
 
-	var bar *progressbar.ProgressBar
+	var s *spinner.Spinner
 	if cfg.ShowBar && !cfg.Quiet {
-		bar = progressbar.NewOptions(len(conns),
-			progressbar.OptionSetDescription(fmt.Sprintf(" 🚀 %d servers", len(conns))),
-			progressbar.OptionSetWriter(os.Stderr),
-			progressbar.OptionShowCount(),
-			progressbar.OptionThrottle(65*time.Millisecond),
-			progressbar.OptionSpinnerType(14),
-			progressbar.OptionFullWidth(),
-			progressbar.OptionSetRenderBlankState(true),
-			progressbar.OptionClearOnFinish(),
-			progressbar.OptionOnCompletion(func() {
-				fmt.Fprintf(os.Stderr, "\n")
-			}),
+		s = spinner.New(spinner.CharSets[14], 100*time.Millisecond,
+			spinner.WithWriter(os.Stderr),
+			spinner.WithColor("cyan"),
+			spinner.WithSuffix(fmt.Sprintf(" 🚀 0/%d servers", len(conns))),
 		)
+		s.Start()
 	}
 
 	// Build combined exclude list: config excludes + .gitignore
@@ -123,25 +115,30 @@ func Run(servers []config.Server, cfg RunConfig) []TransferResult {
 		wg.Add(1)
 		sem <- struct{}{}
 
-		go func(s config.Server) {
+		go func(srv config.Server) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
 			start := time.Now()
-			r := executeOnServer(s, cfg, exclude)
-			r.Server = s.Name
+			r := executeOnServer(srv, cfg, exclude)
+			r.Server = srv.Name
 			r.Elapsed = time.Since(start).Round(time.Millisecond).String()
 
 			mu.Lock()
 			results = append(results, r)
-			if bar != nil {
-				bar.Add(1)
+			if s != nil {
+				done := 0
+				for range results { done++ }
+				s.Suffix = fmt.Sprintf(" 🚀 %d/%d servers ✓", done, len(conns))
 			}
 			mu.Unlock()
 		}(srv)
 	}
 
 	wg.Wait()
+	if s != nil {
+		s.Stop()
+	}
 	return results
 }
 
