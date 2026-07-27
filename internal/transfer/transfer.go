@@ -97,13 +97,17 @@ func Run(servers []config.Server, cfg RunConfig) []TransferResult {
 	var bar *progressbar.ProgressBar
 	if cfg.ShowBar && !cfg.Quiet {
 		bar = progressbar.NewOptions(len(conns),
-			progressbar.OptionSetDescription(" transferring"),
+			progressbar.OptionSetDescription(fmt.Sprintf(" 🚀 %d servers", len(conns))),
 			progressbar.OptionSetWriter(os.Stderr),
 			progressbar.OptionShowCount(),
 			progressbar.OptionThrottle(65*time.Millisecond),
 			progressbar.OptionSpinnerType(14),
 			progressbar.OptionFullWidth(),
 			progressbar.OptionSetRenderBlankState(true),
+			progressbar.OptionClearOnFinish(),
+			progressbar.OptionOnCompletion(func() {
+				fmt.Fprintf(os.Stderr, "\n")
+			}),
 		)
 	}
 

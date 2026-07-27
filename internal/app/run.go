@@ -619,8 +619,15 @@ func runPushPull(ac *appConfig, op transfer.Operation) error {
 
 	if !ac.quiet {
 		opLabel := op.String()
+		serverLabel := tc.ServerRegex
+		if serverLabel == "" && len(tc.Tags) > 0 {
+			serverLabel = strings.Join(tc.Tags, ",")
+		}
+		if serverLabel == "" {
+			serverLabel = "all servers"
+		}
 		fmt.Fprintf(os.Stderr, "  deploi %s  ·  %s  ·  %d files  →  %s\n",
-			opLabel, fileSet.Label, fileSet.Count, tc.ServerRegex)
+			opLabel, fileSet.Label, fileSet.Count, serverLabel)
 		if tc.DryRun {
 			fmt.Fprintf(os.Stderr, "  ⚠ Dry-run mode — no files will be transferred\n")
 		}
