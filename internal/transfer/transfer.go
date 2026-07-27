@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/briandowns/spinner"
 	"github.com/v0id00/deploi/internal/config"
 	"golang.org/x/crypto/ssh"
 )
@@ -93,6 +94,16 @@ func Run(servers []config.Server, cfg RunConfig) []TransferResult {
 		}}
 	}
 
+	var s *spinner.Spinner
+	if cfg.ShowBar && !cfg.Quiet {
+		s = spinner.New(spinner.CharSets[14], 100*time.Millisecond,
+			spinner.WithWriter(os.Stdout),
+			spinner.WithColor("cyan"),
+			spinner.WithSuffix(fmt.Sprintf(" 🚀 0/%d servers", len(conns))),
+		)
+		s.Start()
+	}
+
 	// Build combined exclude list: config excludes + .gitignore
 	exclude := buildExcludeList(cfg)
 
@@ -116,11 +127,19 @@ func Run(servers []config.Server, cfg RunConfig) []TransferResult {
 
 			mu.Lock()
 			results = append(results, r)
+			if s != nil {
+				done := 0
+				for range results { done++ }
+				s.Suffix = fmt.Sprintf(" 🚀 %d/%d servers ✓", done, len(conns))
+			}
 			mu.Unlock()
 		}(srv)
 	}
 
 	wg.Wait()
+	if s != nil {
+		s.Stop()
+	}
 	return results
 }
 
