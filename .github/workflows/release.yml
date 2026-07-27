@@ -32,6 +32,7 @@ jobs:
     runs-on: ubuntu-latest
 
     strategy:
+      fail-fast: false
       matrix:
         os:
           - name: linux-amd64
@@ -77,9 +78,14 @@ jobs:
         working-directory: ${{ github.workspace }}/cmd/deploi
       - name: Checksum
         run: |
+          if [ ! -d "${{ github.workspace }}/dist" ]; then
+            echo "dist/ not found — build may have failed. Skipping checksum."
+            exit 0
+          fi
           cd "${{ github.workspace }}/dist"
           sha256sum deploi-${{ matrix.os.name }}* > deploi-${{ matrix.os.name }}.sha256
       - name: Upload artifacts
+        if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
           name: deploi-${{ matrix.os.name }}
