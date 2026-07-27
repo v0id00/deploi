@@ -139,23 +139,6 @@ Two independent parameters control file selection:
 | `select editor + filter path` | `deploi push --select editor` | Editor-based selection |
 | `select all + filter path` | `deploi push --select all --filter path ./dir/` | All files in a directory |
 
-### Legacy `-m` (still works)
-
-| `-m` value | Equivalent `--select` + `--filter` |
-|------------|-----------------------------------|
-| `-m manual file.php` | `--select manual --filter path file.php` |
-| `-m git-diff` | `--select manual --filter git-diff` |
-| `-m git-diff -P` | `--select fzf --filter git-diff` |
-| `-m git-commit --commit HASH` | `--select manual --filter git-commit --commit HASH` |
-| `-m git-commit -P` | `--select fzf --filter git-commit` |
-| `-m git-branch --branch NAME` | `--select manual --filter git-branch --branch NAME` |
-| `-m fzf` | `--select fzf --filter path` |
-| `-m fzf-commit` | `--select fzf --filter git-commit` |
-| `-m editor` | `--select editor --filter path` |
-| `-m all ./dir/` | `--select all --filter path ./dir/` |
-
-Both styles work and can be mixed. The new `--select`/`--filter` flags are preferred.
-
 ## Commands
 
 | Command | Description |
@@ -181,7 +164,6 @@ Both styles work and can be mixed. The new `--select`/`--filter` flags are prefe
 | `-t, --tags` | Filter by tags (comma-separated, OR) |
 | `-S, --pick-server` | Pick servers interactively via fzf (also works with -t) |
 | `-c, --config` | Config file path |
-| `-m, --method` | File selection method (legacy: manual, git-diff, git-commit, git-branch, fzf, fzf-commit, editor, all) |
 | `--select` | Selection mode (how): manual, fzf, editor, all |
 | `--filter` | Filter mode (what): git-diff, git-commit, git-branch, path |
 | `-P, --pick` | Interactive commit pick via fzf |

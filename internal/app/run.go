@@ -54,7 +54,6 @@ type appConfig struct {
 	version     bool
 
 	// File selection
-	source    string // -m/--method (legacy, maps to select+filter)
 	selectMode string // --select: manual, fzf, editor, all
 	filterMode string // --filter: git-diff, git-commit, git-branch, path
 	paths     []string
@@ -98,13 +97,8 @@ Features:
 File selection:
   --select <mode>   Selection mode: manual, fzf, editor, all
   --filter <type>   Filter: git-diff, git-commit, git-branch, path
-  -m, --method      Legacy: manual, git-diff, git-commit, git-branch, fzf, fzf-commit, editor, all
 
-Examples:
-  deploi push --select fzf --filter git-diff -S   # pick changed files via fzf
-  deploi push --select fzf --filter path -S .      # pick all files via fzf
-  deploi push --select all --filter path -S ./src  # transfer all files in ./src
-
+Use --filter git-diff to pick changed files, or --select fzf to browse files interactively.
 Use -S to pick target servers interactively via fzf.
 
 Examples:
@@ -176,23 +170,19 @@ func newPushCmd() *cobra.Command {
 Shows a diff preview and asks for confirmation before transferring.
 Use --no-preview to skip this, or set no_preview=true in config.
 
-File selection methods:
-  (path args)    Explicit file paths (manual)
-  -m git-diff    Files changed in working tree (staged + unstaged + untracked)
-  -m git-diff -P Pick changed files via fzf
-  -m git-commit  Files in a commit (use --commit HASH or -P to pick)
-  -m fzf-commit  Pick commit then files via fzf
-  -m fzf         Interactive fzf selection for files
-  -m editor      Open editor to select files
-  -m all         All files in a directory
+File selection:
+  --select <mode>   Selection mode: manual, fzf, editor, all
+  --filter <type>   Filter: git-diff, git-commit, git-branch, path
+  (path args)       Explicit file paths (manual)
+
+Use --filter git-diff for changed files, or --select fzf to browse.
+Use --no-staged to exclude staged files from git-diff selection.
 
 Examples:
-  deploi push -s prod -m git-diff
-  deploi push -S -m git-diff                # pick servers via fzf
-  deploi push -s prod -m git-diff -P         # pick changed files via fzf
-  deploi push -s prod -m git-commit -P       # pick commit via fzf
-  deploi push -s prod -m fzf-commit           # pick commit + files via fzf
-  deploi push -s staging --profile assets`,
+  deploi push --select fzf --filter git-diff -S    # pick changed files via fzf
+  deploi push --select fzf --filter path -S        # pick all files via fzf
+  deploi push --select all --filter path ./src     # transfer all files
+  deploi push -S -s prod --filter git-diff         # push changed files to prod`,
 		Args: cobra.MaximumNArgs(100),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ac.paths = args
@@ -488,12 +478,10 @@ func newSkillCmd() *cobra.Command {
 // ---------------------------------------------------------------------------
 
 func addFileSelectionFlags(flags *pflag.FlagSet, ac *appConfig) {
-	flags.StringVarP(&ac.source, "method", "m", "manual",
-		"File selection: manual, git-diff, git-commit, git-branch, fzf, fzf-commit, editor, all (legacy)")
 	flags.StringVar(&ac.selectMode, "select", "",
-		"Selection mode: manual, fzf, editor, all (overrides -m)")
+		"Selection mode: manual, fzf, editor, all")
 	flags.StringVar(&ac.filterMode, "filter", "",
-		"Filter: git-diff, git-commit, git-branch, path (overrides -m)")
+		"Filter: git-diff, git-commit, git-branch, path")
 	flags.StringVar(&ac.commit, "commit", "", "Git commit hash (for git-commit filter)")
 	flags.StringVar(&ac.branch, "branch", "", "Git branch name (for git-branch filter)")
 	flags.BoolVarP(&ac.pick, "pick", "P", false, "Pick commit interactively via fzf")
@@ -1240,12 +1228,6 @@ func resolveFiles(ac *appConfig, editor string) (*picker.FileSet, error) {
 	sel := ac.selectMode
 	fil := ac.filterMode
 
-	// If no explicit --select/--filter, parse from legacy -m
-	if sel == "" && fil == "" {
-		sourceType := parseSourceType(ac.source)
-		return resolveFromSource(ac, sourceType, editor)
-	}
-
 	// Default filter for each select mode
 	if fil == "" {
 		switch sel {
@@ -1382,91 +1364,13 @@ func resolveFilter(fil string, ac *appConfig, editor string, useFZF bool) (*pick
 	}
 }
 
-// resolveFromSource handles the legacy -m flag.
-func resolveFromSource(ac *appConfig, sourceType picker.SourceType, editor string) (*picker.FileSet, error) {
-	baseDir := cwd()
-	switch sourceType {
-	case picker.SourceManual:
-		if len(ac.paths) == 0 {
-			return nil, fmt.Errorf("manual mode requires file paths as arguments")
-		}
-		return picker.Pick(picker.PickConfig{Source: sourceType, Paths: ac.paths, BaseDir: baseDir})
-
-	case picker.SourceGitDiff:
-		includeStaged := !ac.noStaged
-		if ac.pick {
-			return picker.Pick(picker.PickConfig{
-				Source:          sourceType,
-				GitDir:          baseDir,
-				PickFiles:       true,
-				IncludeStaged:   includeStaged,
-				IncludeUntracked: true,
-			})
-		}
-		return picker.Pick(picker.PickConfig{
-			Source:           sourceType,
-			GitDir:           baseDir,
-			IncludeStaged:    includeStaged,
-			IncludeUntracked:  true,
-		})
-
-	case picker.SourceGitCommit:
-		if ac.pick {
-			return picker.Pick(picker.PickConfig{Source: picker.SourceFZFCommit, GitDir: baseDir, PickCommit: true, Editor: editor})
-		}
-		if ac.commit == "" {
-			return nil, fmt.Errorf("--commit is required. Use --commit <hash> or --pick/-P to pick interactively")
-		}
-		return picker.Pick(picker.PickConfig{Source: sourceType, GitDir: baseDir, Commit: ac.commit})
-
-	case picker.SourceGitBranch:
-		if ac.branch == "" {
-			return nil, fmt.Errorf("--branch is required for git-branch method")
-		}
-		return picker.Pick(picker.PickConfig{Source: sourceType, GitDir: baseDir, Branch: ac.branch})
-
-	case picker.SourceFZF:
-		return picker.Pick(picker.PickConfig{Source: sourceType, Paths: ac.paths, GitDir: baseDir, Editor: editor})
-
-	case picker.SourceFZFCommit:
-		return picker.Pick(picker.PickConfig{Source: sourceType, GitDir: baseDir, PickCommit: true, Editor: editor})
-
-	case picker.SourceEditor:
-		return picker.Pick(picker.PickConfig{Source: sourceType, Paths: ac.paths, Editor: editor})
-
-	case picker.SourceAll:
-		targets := ac.paths
-		if len(targets) == 0 {
-			targets = []string{"."}
-		}
-		return picker.Pick(picker.PickConfig{Source: sourceType, Paths: targets, BaseDir: baseDir})
-
-	default:
-		return nil, fmt.Errorf("unknown source: %s", ac.source)
-	}
-}
-
-func parseSourceType(s string) picker.SourceType {
-	switch strings.ToLower(s) {
-	case "manual": return picker.SourceManual
-	case "git-diff", "gitdiff", "git_diff", "changed": return picker.SourceGitDiff
-	case "git-commit", "gitcommit", "git_commit", "commit": return picker.SourceGitCommit
-	case "git-branch", "gitbranch", "git_branch", "branch": return picker.SourceGitBranch
-	case "fzf": return picker.SourceFZF
-	case "fzf-commit", "fzfcommit", "fzf_commit", "commit-pick", "pick-commit": return picker.SourceFZFCommit
-	case "editor", "edit", "select": return picker.SourceEditor
-	case "all", "dir", "directory", "recursive": return picker.SourceAll
-	default: return picker.SourceManual
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Profile support
 // ---------------------------------------------------------------------------
 
 func applyProfile(ac *appConfig, p config.Profile) {
 	if p.Method != "" {
-		ac.source = p.Method
+		ac.selectMode = p.Method
 	}
 	if len(p.Paths) > 0 {
 		ac.paths = p.Paths
@@ -1600,7 +1504,7 @@ func recordDeployHistory(op string, ac *appConfig, fileSet *picker.FileSet, resu
 
 	entry := history.Entry{
 		Operation:  op,
-		Method:     ac.source,
+		Method:     ac.selectMode + "+" + ac.filterMode,
 		Servers:    servers,
 		Files:      fileSet.Count,
 		FileList:   fileSet.Files,
