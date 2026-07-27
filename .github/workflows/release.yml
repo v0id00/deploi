@@ -71,7 +71,7 @@ jobs:
           export GOARCH=${{ matrix.os.goarch }}
           export VERSION=$(git describe --tags --always 2>/dev/null || echo dev)
           EXT=""
-          [ "$GOOS" = "windows" ] && EXT=".exe"
+          if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
           go build \
             -ldflags="-X 'github.com/v0id00/deploi/internal/app.version=${VERSION}'" \
             -o "../dist/deploi-${{ matrix.os.name }}${EXT}" .
