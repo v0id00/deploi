@@ -152,7 +152,7 @@ deploi config generate -o -
 
 - **Relative paths**: files converted to relative from BaseDir before rsync
 - **Config search**: 6 locations, platform-aware (Linux/macOS/Windows)
-- **Concurrent transfers**: goroutines + semaphores (per-server)
+- **Concurrent transfers**: goroutines + semaphores (per-server), spinner animation
 - **Exclude patterns**: config excludes + `.gitignore` auto-detection
 - **Pre/Post hooks**: SSH commands via native Go SSH client
 - **History**: JSON files in `~/.deploi/history/`
