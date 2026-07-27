@@ -829,9 +829,37 @@ func runRollback(args []string) error {
 		return fmt.Errorf("no deploy entry to rollback: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "  Rolling back deploy #%d (%s)...\n", entry.ID, entry.Timestamp.Format(time.RFC3339))
-	fmt.Fprintf(os.Stderr, "  Note: Rollback requires your servers to have rsync --backup-dir snapshots.\n")
-	fmt.Fprintf(os.Stderr, "  Full rollback implementation coming soon.\n")
+	if len(entry.BackupPaths) == 0 {
+		return fmt.Errorf("deploy #%d has no backups — push with rollback support enabled first", entry.ID)
+	}
+
+	// Load config for server details
+	cfgPath, err := config.FindConfigPath("")
+	if err != nil {
+		return fmt.Errorf("config not found: %w", err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	servers := make([]config.Server, 0, len(cfg.Servers))
+	for _, s := range cfg.Servers {
+		if _, hasBackup := entry.BackupPaths[s.Name]; hasBackup {
+			servers = append(servers, s)
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "  🔙 Rolling back deploy #%d (%s)\n", entry.ID, entry.Timestamp.Format(time.RFC3339))
+	fmt.Fprintf(os.Stderr, "  Files: %d  Servers: %d\n", entry.Files, len(entry.Servers))
+	fmt.Fprintln(os.Stderr)
+
+	results := transfer.RunRollback(servers, transfer.RollbackOptions{
+		BackupPaths: entry.BackupPaths,
+		RemotePath:  entry.RemotePath,
+		Exclude:     cfg.Defaults.Exclude,
+	})
+	printResults(results)
 	return nil
 }
 
@@ -1432,6 +1460,15 @@ func recordDeployHistory(op string, ac *appConfig, fileSet *picker.FileSet, resu
 		RemotePath: ac.remoteDir,
 		Status:     status,
 		Profile:    ac.profile,
+		BackupPaths: func() map[string]string {
+			bp := make(map[string]string)
+			for _, r := range results {
+				if r.BackupPath != "" {
+					bp[r.Server] = r.BackupPath
+				}
+			}
+			return bp
+		}(),
 	}
 
 	_ = store.Record(entry) // best effort

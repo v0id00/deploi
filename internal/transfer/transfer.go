@@ -52,6 +52,7 @@ type TransferResult struct {
 	Error      string `json:"error,omitempty"`
 	HooksPre   int    `json:"hooks_pre,omitempty"`
 	HooksPost  int    `json:"hooks_post,omitempty"`
+	BackupPath string `json:"backup_path,omitempty"` // remote backup dir for rollback
 }
 
 // RunConfig holds parameters for a transfer run.
@@ -287,10 +288,16 @@ func runRsync(srv config.Server, cfg RunConfig, exclude []string) TransferResult
 
 	args := []string{"-avzR"}
 	if cfg.Verbose {
-		args = append(args, "-v") // extra verbosity
+		args = append(args, "-v")
 	}
 	if cfg.DryRun {
 		args = append(args, "--dry-run")
+	}
+	// Backup overwritten files for rollback
+	backupDir := ""
+	if !cfg.DryRun && cfg.Operation == OpPush {
+		backupDir = filepath.Join(remoteDir, ".deploi-backups", fmt.Sprintf("%d", time.Now().Unix()))
+		args = append(args, "--backup", "--backup-dir", backupDir)
 	}
 	if cfg.RsyncOpts != "" {
 		args = append(args, strings.Fields(cfg.RsyncOpts)...)
@@ -357,11 +364,12 @@ func runRsync(srv config.Server, cfg RunConfig, exclude []string) TransferResult
 	}
 
 	return TransferResult{
-		Status:    "ok",
-		Files:     parsed.FileCount,
-		Bytes:     parsed.BytesSent,
-		Speed:     parsed.Speed,
-		TotalSize: parsed.TotalSize,
+		Status:     "ok",
+		Files:      parsed.FileCount,
+		Bytes:      parsed.BytesSent,
+		Speed:      parsed.Speed,
+		TotalSize:  parsed.TotalSize,
+		BackupPath: backupDir,
 	}
 }
 
@@ -759,4 +767,86 @@ func GitDiffSummary(files []string, gitDir string) string {
 		return b.String()
 	}
 	return string(out)
+}
+
+// RollbackOptions holds parameters for rsync rollback.
+type RollbackOptions struct {
+	BackupPaths map[string]string // server name → remote backup path
+	RemotePath  string            // remote base directory (fallback for each server)
+	Exclude     []string
+	Quiet       bool
+	Verbose     bool
+}
+
+// RunRollback restores files from backup dirs on each server.
+func RunRollback(servers []config.Server, opts RollbackOptions) []TransferResult {
+	if len(opts.BackupPaths) == 0 {
+		return []TransferResult{{
+			Status: "error",
+			Error:  "no backup paths provided",
+		}}
+	}
+
+	var mu sync.Mutex
+	results := make([]TransferResult, 0, len(servers))
+	sem := make(chan struct{}, 3)
+	var wg sync.WaitGroup
+
+	for _, srv := range servers {
+		backupPath, hasBackup := opts.BackupPaths[srv.Name]
+		if !hasBackup {
+			continue
+		}
+
+		wg.Add(1)
+		sem <- struct{}{}
+
+		go func(s config.Server, bp string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			start := time.Now()
+			remoteDir := opts.RemotePath
+			if remoteDir == "" {
+				remoteDir = s.RemotePath
+			}
+
+			backupSrc := fmt.Sprintf("%s:%s/", s.AddrNoPort(), bp)
+			remote := fmt.Sprintf("%s:%s", s.AddrNoPort(), remoteDir)
+
+			args := []string{"-avz"}
+			for _, ex := range opts.Exclude {
+				args = append(args, "--exclude", ex)
+			}
+			for _, ex := range s.Exclude {
+				args = append(args, "--exclude", ex)
+			}
+			if sshOpt := buildSSHOpts(s); sshOpt != "" {
+				args = append(args, "-e", sshOpt)
+			}
+			args = append(args, backupSrc, remote)
+
+			cmd := exec.Command("rsync", args...)
+			output, err := cmd.CombinedOutput()
+
+			r := TransferResult{Server: s.Name}
+			if err != nil {
+				r.Status = "error"
+				r.Error = enrichRsyncError(err, output, RunConfig{}, "")
+			} else {
+				r.Status = "ok"
+				parsed := parseRsyncOutput(string(output))
+				r.Files = parsed.FileCount
+				r.Bytes = parsed.BytesSent
+			}
+			r.Elapsed = time.Since(start).Round(time.Millisecond).String()
+
+			mu.Lock()
+			results = append(results, r)
+			mu.Unlock()
+		}(srv, backupPath)
+	}
+
+	wg.Wait()
+	return results
 }
