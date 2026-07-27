@@ -1639,10 +1639,22 @@ func printResults(results []transfer.TransferResult) {
 			}
 		} else {
 			fail++
+			// Split error into message and suggestion
 			errStr := r.Error
-			if len(errStr) > 120 { errStr = errStr[:117] + "..." }
+			parts := strings.SplitN(errStr, "\n", 2)
+			mainMsg := parts[0]
+			detail := ""
+			if len(parts) > 1 {
+				detail = parts[1]
+			}
+			if len(mainMsg) > 100 {
+				mainMsg = mainMsg[:97] + "..."
+			}
 			fmt.Fprintf(os.Stdout, "  %s %-20s  %s\n",
-				color.RedString("✗"), r.Server, errStr)
+				color.RedString("✗"), r.Server, mainMsg)
+			if detail != "" {
+				fmt.Fprintf(os.Stdout, "    %s\n", color.YellowString("💡 %s", detail))
+			}
 		}
 	}
 	if fail > 0 {

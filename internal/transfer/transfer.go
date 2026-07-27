@@ -334,9 +334,11 @@ func runRsync(srv config.Server, cfg RunConfig, exclude []string) TransferResult
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return TransferResult{Status: "error", Error: fmt.Sprintf("rsync timeout (%ds)", cfg.Timeout)}
+			return TransferResult{Status: "error",
+				Error: enrichRsyncError(err, output, cfg, "timeout")}
 		}
-		return TransferResult{Status: "error", Error: fmt.Sprintf("rsync: %v\n%s", err, string(output))}
+		return TransferResult{Status: "error",
+			Error: enrichRsyncError(err, output, cfg, "")}
 	}
 
 	// Parse rsync output into structured data
@@ -360,6 +362,79 @@ func runRsync(srv config.Server, cfg RunConfig, exclude []string) TransferResult
 		Speed:     parsed.Speed,
 		TotalSize: parsed.TotalSize,
 	}
+}
+
+// enrichRsyncError enriches rsync errors with human-readable explanations.
+func enrichRsyncError(err error, output []byte, cfg RunConfig, kind string) string {
+	exitCode := 1
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		exitCode = exitErr.ExitCode()
+	}
+
+	outStr := string(output)
+	msg := ""
+	suggestion := ""
+
+	// Detect known error patterns in output
+	switch {
+	case kind == "timeout":
+		msg = fmt.Sprintf("Connection timed out after %ds", cfg.Timeout)
+		suggestion = "Check VPN/network, or increase --timeout"
+	case exitCode == 1:
+		msg = "Rsync reported an error"
+		if strings.Contains(outStr, "No such file or directory") {
+			msg = "Remote directory or file not found"
+			suggestion = "Check remote_path in config, or create it: mkdir -p <remote_path>"
+		} else if strings.Contains(outStr, "Permission denied") {
+			msg = "SSH authentication failed"
+			suggestion = "Check SSH key: ssh-add ~/.ssh/id_ed25519, or verify password"
+		} else if strings.Contains(outStr, "connection refused") {
+			msg = "SSH connection refused"
+			suggestion = "Verify server is running and port is correct (ssh -p PORT HOST)"
+		} else if strings.Contains(outStr, "Name or service not known") {
+			msg = "Hostname could not be resolved"
+			suggestion = "Check host in config, or add to ~/.ssh/config"
+		} else if strings.Contains(outStr, "Host key verification failed") {
+			msg = "Remote host key has changed"
+			suggestion = "Fix: ssh-keygen -R HOSTNAME, then reconnect"
+		}
+	case exitCode == 10:
+		msg = "Rsync error in socket I/O"
+		suggestion = "Network issue — check VPN and SSH connectivity"
+	case exitCode == 11:
+		msg = "Rsync error in file I/O"
+		if strings.Contains(outStr, "mkdir") {
+			suggestion = "Remote path missing or wrong permissions: check remote_path or create the directory"
+		} else {
+			suggestion = "Disk full, permission denied, or file vanished during transfer"
+		}
+	case exitCode == 12:
+		msg = "Rsync error in protocol data stream"
+		suggestion = "SSH connection issue — try: ssh HOST -p PORT"
+	case exitCode == 23:
+		msg = "Rsync partial transfer due to error"
+		if strings.Contains(outStr, "Permission denied") {
+			suggestion = "Check write permissions on remote directory"
+		} else {
+			suggestion = "Some files could not be transferred, check rsync output"
+		}
+	case exitCode == 30:
+		msg = "Rsync timeout in data transfer"
+		suggestion = "Slow connection, increase --timeout or use smaller batches"
+	default:
+		msg = fmt.Sprintf("rsync exited with code %d", exitCode)
+		suggestion = "Run with -v (verbose) to see full error output"
+	}
+
+	// Truncate raw output for readability
+	if len(outStr) > 500 {
+		outStr = outStr[:497] + "..."
+	}
+
+	if suggestion != "" {
+		return fmt.Sprintf("%s. %s\n%s", msg, suggestion, outStr)
+	}
+	return fmt.Sprintf("%s\n%s", msg, outStr)
 }
 
 // runSCP executes the transfer using SCP.
