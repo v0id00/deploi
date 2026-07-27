@@ -95,7 +95,7 @@ func Run(servers []config.Server, cfg RunConfig) []TransferResult {
 	}
 
 	var s *spinner.Spinner
-	if cfg.ShowBar && !cfg.Quiet {
+	if cfg.ShowBar && !cfg.Quiet && len(conns) > 1 {
 		s = spinner.New(spinner.CharSets[14], 100*time.Millisecond,
 			spinner.WithWriter(os.Stderr),
 			spinner.WithColor("cyan"),
