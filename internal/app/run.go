@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -545,6 +546,7 @@ func runPushPull(ac *appConfig, op transfer.Operation) error {
 	for _, s := range cfg.Servers {
 		servers = append(servers, s)
 	}
+	sort.Slice(servers, func(i, j int) bool { return servers[i].Name < servers[j].Name })
 	if ac.pickSrv {
 		selected, err := pickServersFZF(servers, ac.server, splitTags(ac.tags))
 		if err != nil {
@@ -663,6 +665,7 @@ func runWatch(ac *appConfig) error {
 	for _, s := range cfg.Servers {
 		servers = append(servers, s)
 	}
+	sort.Slice(servers, func(i, j int) bool { return servers[i].Name < servers[j].Name })
 	remoteDir := ac.remoteDir
 	if remoteDir == "" {
 		remoteDir = cfg.Defaults.RemotePath
@@ -883,6 +886,7 @@ func runRemote(ac *appConfig, commands []string) error {
 	for _, s := range cfg.Servers {
 		servers = append(servers, s)
 	}
+	sort.Slice(servers, func(i, j int) bool { return servers[i].Name < servers[j].Name })
 
 	// Interactive server selection via fzf
 	if ac.pickSrv {
