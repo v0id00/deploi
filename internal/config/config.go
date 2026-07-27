@@ -136,6 +136,14 @@ func (s Server) Addr() string {
 	return hostPort
 }
 
+// AddrNoPort returns user@host without port (for rsync destination, since port goes in -e).
+func (s Server) AddrNoPort() string {
+	if s.User != "" {
+		return fmt.Sprintf("%s@%s", s.User, s.Host)
+	}
+	return s.Host
+}
+
 // Config is the top-level TOML configuration.
 type Config struct {
 	Defaults Defaults            `toml:"defaults,omitempty"`

@@ -278,7 +278,8 @@ func runRsync(srv config.Server, cfg RunConfig, exclude []string) TransferResult
 	if srv.RemotePath != "" {
 		remoteDir = srv.RemotePath
 	}
-	remote := fmt.Sprintf("%s:%s", srv.Addr(), remoteDir)
+	// rsync destination: use AddrNoPort (port goes in -e)
+	remote := fmt.Sprintf("%s:%s", srv.AddrNoPort(), remoteDir)
 
 	args := []string{"-avzR"}
 	if cfg.Verbose {
@@ -313,7 +314,7 @@ func runRsync(srv config.Server, cfg RunConfig, exclude []string) TransferResult
 		args = append(args, remote)
 	case OpPull:
 		for _, f := range relFiles {
-			pullSrc := fmt.Sprintf("%s:%s%s", srv.Addr(), remoteDir, f)
+			pullSrc := fmt.Sprintf("%s:%s%s", srv.AddrNoPort(), remoteDir, f)
 			args = append(args, pullSrc)
 		}
 		args = append(args, ".")
@@ -374,10 +375,10 @@ func runSCP(srv config.Server, cfg RunConfig) TransferResult {
 	switch cfg.Operation {
 	case OpPush:
 		args = append(args, cfg.LocalFiles...)
-		args = append(args, fmt.Sprintf("%s:%s", srv.Addr(), remoteDir))
+		args = append(args, fmt.Sprintf("%s:%s", srv.AddrNoPort(), remoteDir))
 	case OpPull:
 		for _, f := range cfg.LocalFiles {
-			args = append(args, fmt.Sprintf("%s:%s%s", srv.Addr(), remoteDir, f))
+			args = append(args, fmt.Sprintf("%s:%s%s", srv.AddrNoPort(), remoteDir, f))
 		}
 		args = append(args, ".")
 	}
