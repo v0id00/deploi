@@ -334,7 +334,7 @@ func pickFZF(paths []string, gitDir, baseDir string) (*FileSet, error) {
 
 	candidates := paths
 	if len(candidates) == 0 && gitDir != "" {
-		// git status --porcelain: "XY filename" — do NOT trim leading space
+		// Try git status to show project files
 		if out, err := exec.Command("git", "-C", gitDir, "status", "--porcelain").Output(); err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
 				if len(line) < 4 { continue }
@@ -345,6 +345,50 @@ func pickFZF(paths []string, gitDir, baseDir string) (*FileSet, error) {
 				if filename != "" {
 					candidates = append(candidates, filename)
 				}
+			}
+		}
+	}
+
+	// If still no candidates and we have a base dir, list all files recursively
+	if len(candidates) == 0 {
+		root := baseDir
+		if root == "" {
+			root, _ = os.Getwd()
+		}
+		if root != "" {
+			// Also try git ls-files for tracked files
+			if gitDir != "" {
+				if out, err := exec.Command("git", "-C", gitDir, "ls-files").Output(); err == nil {
+					for _, f := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+						if f != "" {
+							candidates = append(candidates, f)
+						}
+					}
+					// Also add untracked files
+					if out2, err := exec.Command("git", "-C", gitDir, "ls-files", "--others", "--exclude-standard").Output(); err == nil {
+						for _, f := range strings.Split(strings.TrimSpace(string(out2)), "\n") {
+							if f != "" {
+								candidates = append(candidates, f)
+							}
+						}
+					}
+				}
+			}
+			// If git didn't work, fall back to filepath.Walk
+			if len(candidates) == 0 {
+				filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+					if err != nil || info.IsDir() {
+						if info != nil && info.IsDir() && strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
+							return filepath.SkipDir
+						}
+						return nil
+					}
+					rel, _ := filepath.Rel(root, path)
+					if rel != "" && !strings.HasPrefix(rel, ".") {
+						candidates = append(candidates, rel)
+					}
+					return nil
+				})
 			}
 		}
 	}
