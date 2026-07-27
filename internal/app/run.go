@@ -41,6 +41,7 @@ type appConfig struct {
 	concurrency int
 	force       bool
 	dryRun      bool
+	verbose     bool
 	json        bool
 	quiet       bool
 	noConfirm   bool
@@ -134,6 +135,7 @@ Examples:
 	flags.IntVar(&ac.concurrency, "concurrency", 0, "Concurrent server limit")
 	flags.BoolVar(&ac.force, "force", false, "Skip confirmation")
 	flags.BoolVar(&ac.dryRun, "dry-run", false, "Preview changes without transferring")
+	flags.BoolVarP(&ac.verbose, "verbose", "v", false, "Show detailed rsync output")
 	flags.BoolVar(&ac.json, "json", false, "Output as JSON")
 	flags.BoolVarP(&ac.quiet, "quiet", "q", false, "Suppress progress bar and banners")
 	flags.BoolVar(&ac.noConfirm, "no-confirm", false, "Skip confirmation prompts when targeting all servers")
@@ -464,6 +466,7 @@ func addExecFlags(flags *pflag.FlagSet, ac *appConfig) {
 	flags.IntVar(&ac.concurrency, "concurrency", 0, "Concurrent server limit")
 	flags.BoolVar(&ac.force, "force", false, "Skip confirmation")
 	flags.BoolVar(&ac.dryRun, "dry-run", false, "Preview changes without transferring")
+	flags.BoolVarP(&ac.verbose, "verbose", "v", false, "Show detailed rsync output")
 	flags.BoolVar(&ac.json, "json", false, "Output as JSON")
 	flags.BoolVarP(&ac.quiet, "quiet", "q", false, "Suppress progress bar and banners")
 	flags.BoolVar(&ac.noConfirm, "no-confirm", false, "Skip confirmation prompts when targeting all servers")
@@ -590,6 +593,7 @@ func runPushPull(ac *appConfig, op transfer.Operation) error {
 		GitDir:      cwd(),
 		BaseDir:     cwd(),
 		Preview:     !ac.noPreview,
+		Verbose:     ac.verbose,
 	}
 
 	if tc.RemoteDir == "" {
@@ -697,6 +701,7 @@ func runWatch(ac *appConfig) error {
 				NoGitignore: ac.noGitignore,
 				GitDir:      cwd(),
 				BaseDir:     cwd(),
+				Verbose:     ac.verbose,
 			}
 
 			results := transfer.Run(servers, tc)
@@ -894,6 +899,7 @@ func runRemote(ac *appConfig, commands []string) error {
 		ServerRegex: ac.server,
 		Tags:        splitTags(ac.tags),
 		DryRun:      ac.dryRun,
+		Verbose:     ac.verbose,
 		Concurrency: ac.concurrency,
 		Timeout:     ac.timeout,
 		ShowBar:     !ac.quiet && cfg.Defaults.ShowBar,

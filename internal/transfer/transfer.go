@@ -71,6 +71,7 @@ type RunConfig struct {
 	GitDir      string // git directory for .gitignore detection
 	BaseDir     string // base directory for relative path resolution (default: cwd)
 	Preview     bool  // show diff preview before transfer
+	Verbose     bool  // show detailed rsync output
 }
 
 // Run executes the transfer on all matching servers.
@@ -280,6 +281,9 @@ func runRsync(srv config.Server, cfg RunConfig, exclude []string) TransferResult
 	remote := fmt.Sprintf("%s:%s", srv.Addr(), remoteDir)
 
 	args := []string{"-avzR"}
+	if cfg.Verbose {
+		args = append(args, "-v") // extra verbosity
+	}
 	if cfg.DryRun {
 		args = append(args, "--dry-run")
 	}
@@ -320,6 +324,9 @@ func runRsync(srv config.Server, cfg RunConfig, exclude []string) TransferResult
 
 	cmd := exec.CommandContext(ctx, "rsync", args...)
 	cmd.Dir = baseDir
+	if cfg.Verbose {
+		fmt.Fprintf(os.Stderr, "  rsync %s\n", strings.Join(args, " "))
+	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -328,7 +335,9 @@ func runRsync(srv config.Server, cfg RunConfig, exclude []string) TransferResult
 		return TransferResult{Status: "error", Error: fmt.Sprintf("rsync: %v\n%s", err, string(output))}
 	}
 
-	if !cfg.Quiet && !cfg.DryRun {
+	if cfg.Verbose {
+		os.Stderr.Write(output)
+	} else if !cfg.Quiet && !cfg.DryRun {
 		os.Stderr.Write(output)
 	}
 
