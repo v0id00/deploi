@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -155,6 +157,7 @@ Examples:
 	cmd.AddCommand(newHistoryCmd())
 	cmd.AddCommand(newRollbackCmd())
 	cmd.AddCommand(newConfigCmd())
+	cmd.AddCommand(newCheckCmd())
 	cmd.AddCommand(newCompletionCmd())
 	cmd.AddCommand(newSkillCmd())
 
@@ -425,6 +428,31 @@ Interactively:
 	}
 
 	cmd.AddCommand(generateCmd, validateCmd, initCmd)
+	return cmd
+}
+
+func newCheckCmd() *cobra.Command {
+	ac := &appConfig{}
+	cmd := &cobra.Command{
+		Use:   "check",
+		Short: "Test SSH connectivity to all configured servers",
+		Long: `Test SSH connectivity to servers defined in the config with latency.
+	
+Examples:
+  deploi check              # test all servers
+  deploi check -s www*      # servers matching glob
+  deploi check -t prod      # servers with tag
+  deploi check -S           # pick servers interactively
+  deploi check -v           # show SSH version banner`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runCheck(ac)
+		},
+	}
+	flags := cmd.Flags()
+	flags.StringVarP(&ac.server, "server", "s", "", "Glob/name filter")
+	flags.StringVarP(&ac.tags, "tags", "t", "", "Tag filter (comma-separated, OR)")
+	flags.BoolVarP(&ac.pickSrv, "pick-server", "S", false, "Pick servers via fzf")
+	flags.BoolVarP(&ac.verbose, "verbose", "v", false, "Show SSH version banner")
 	return cmd
 }
 
@@ -1428,14 +1456,8 @@ func splitTags(tags string) []string {
 	return parts
 }
 
-func hasAnyTag(serverTags, filterTags []string) bool {
-	for _, ft := range filterTags {
-		for _, st := range serverTags {
-			if st == ft { return true }
-		}
-	}
-	return false
-}
+// ---------------------------------------------------------------------------
+// isRealTerminal
 
 func cwd() string { d, _ := os.Getwd(); return d }
 
@@ -1622,6 +1644,138 @@ func confirmPrompt(msg string) bool {
 	response = strings.TrimSpace(strings.ToLower(response))
 	return response == "y" || response == "yes"
 }
+
+// runCheck tests SSH connectivity to all matching servers.
+func runCheck(ac *appConfig) error {
+	cfgPath, err := config.FindConfigPath(ac.configPath)
+	if err != nil {
+		return fmt.Errorf("config not found: %w", err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	servers := make([]config.Server, 0, len(cfg.Servers))
+	for _, s := range cfg.Servers {
+		servers = append(servers, s)
+	}
+	sort.Slice(servers, func(i, j int) bool { return servers[i].Name < servers[j].Name })
+
+	// Apply filters
+	if ac.pickSrv {
+		selected, err := pickServersFZF(servers, ac.server, splitTags(ac.tags))
+		if err != nil {
+			return err
+		}
+		servers = selected
+	} else if ac.server != "" || ac.tags != "" {
+		tagList := splitTags(ac.tags)
+		var filtered []config.Server
+		for _, s := range servers {
+			if ac.server != "" {
+				if matched, _ := filepath.Match(ac.server, s.Name); !matched {
+					continue
+				}
+			}
+			if len(tagList) > 0 {
+				if !hasAnyTag(s.Tags, tagList) {
+					continue
+				}
+			}
+			filtered = append(filtered, s)
+		}
+		servers = filtered
+	}
+
+	if len(servers) == 0 {
+		return fmt.Errorf("no servers match the given filter")
+	}
+
+	fmt.Fprintf(os.Stderr, "  🔍 Checking %d server(s)...\n\n", len(servers))
+	ok := 0
+	fail := 0
+
+	for _, s := range servers {
+		hostPort := net.JoinHostPort(s.Host, strconv.Itoa(s.Port))
+		start := time.Now()
+
+		conn, err := net.DialTimeout("tcp", hostPort, 10*time.Second)
+		latency := time.Since(start)
+
+		if err != nil {
+			fail++
+			errMsg := enrichConnError(err)
+			fmt.Fprintf(os.Stdout, "  %s %-20s  %s  %s\n",
+				color.RedString("✗"), s.Name, color.RedString("unreachable"), color.YellowString(errMsg))
+			continue
+		}
+		conn.Close()
+
+		sshInfo := ""
+		if ac.verbose {
+			sshInfo = testSSHVersion(s)
+		}
+
+		ok++
+		latencyStr := color.CyanString(latency.Round(time.Millisecond).String())
+		fmt.Fprintf(os.Stdout, "  %s %-20s  %s%s\n",
+			color.GreenString("✓"), s.Name, latencyStr, sshInfo)
+	}
+
+	fmt.Fprintf(os.Stderr, "\n  %d OK · %d FAIL\n", ok, fail)
+	return nil
+}
+
+func enrichConnError(err error) string {
+	s := err.Error()
+	switch {
+	case strings.Contains(s, "connection refused"):
+		return "Connection refused — is SSH running?"
+	case strings.Contains(s, "i/o timeout"):
+		return "Connection timed out — check VPN"
+	case strings.Contains(s, "no route to host"):
+		return "No route to host — check network"
+	case strings.Contains(s, "Name or service not known"):
+		return "Hostname not found"
+	default:
+		return s
+	}
+}
+
+func testSSHVersion(s config.Server) string {
+	hostPort := net.JoinHostPort(s.Host, strconv.Itoa(s.Port))
+	conn, err := net.DialTimeout("tcp", hostPort, 5*time.Second)
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 255)
+	n, _ := conn.Read(buf)
+	if n > 0 {
+		banner := strings.TrimSpace(string(buf[:n]))
+		if strings.HasPrefix(banner, "SSH-") {
+			return fmt.Sprintf("  %s", color.MagentaString(banner))
+		}
+	}
+	return ""
+}
+
+func hasAnyTag(serverTags, filterTags []string) bool {
+	for _, ft := range filterTags {
+		for _, st := range serverTags {
+			if st == ft {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// Results display
 
 func printResults(results []transfer.TransferResult) {
 	ok := 0
