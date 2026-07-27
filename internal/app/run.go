@@ -118,8 +118,8 @@ Examples:
   deploi watch -s staging ./
   deploi history
   deploi rollback 3`,
-		SilenceUsage:  true,
-		SilenceErrors: true,
+		SilenceUsage:  false,
+		SilenceErrors: false,
 		Args:          cobra.MaximumNArgs(0),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return run(ac, cmd)
