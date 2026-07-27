@@ -86,13 +86,11 @@ Webticari servers (8 adet) `~/.config/deploi/config.toml` içinde tanımlı.
 
 ```bash
 # File operations
-deploi push -s prod -m git-diff                  # changed files (relative paths)
-deploi push -S -t prod -m git-diff               # pick servers via fzf
-deploi push -s prod -m git-commit -P             # pick commit via fzf
-deploi push -s prod -m fzf-commit                # pick commit + files
-deploi push -s staging --profile assets           # named profile
-deploi pull -s staging -m all remote/path/
-deploi sync -s prod -m git-diff
+deploi push -s prod --filter git-diff              # changed files (relative paths)
+deploi push -S -t prod --filter git-diff            # pick servers via fzf
+deploi push -s staging --profile assets             # named profile
+deploi pull -s staging --select all --filter path remote/path/
+deploi sync -s prod --filter git-diff
 
 # Remote commands
 deploi run -s prod "systemctl reload nginx"

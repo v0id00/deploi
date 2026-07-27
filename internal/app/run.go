@@ -209,8 +209,8 @@ func newPullCmd() *cobra.Command {
 		Long: `Download files from remote servers to local machine.
 
 Examples:
-  deploi pull -s staging -m all remote/path/
-  deploi pull -s prod-web-1 var/log/app.log`,
+  deploi pull -s staging --select all --filter path remote/path/
+  deploi pull -s prod var/log/app.log`,
 		Args: cobra.MaximumNArgs(100),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ac.paths = args
@@ -238,7 +238,8 @@ func newSyncCmd() *cobra.Command {
 Shows what would change before transferring.
 
 Examples:
-  deploi sync -s prod -m git-diff`,
+  deploi sync -s prod --filter git-diff
+  deploi sync -s prod --select fzf`,
 		Args: cobra.MaximumNArgs(100),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ac.paths = args
