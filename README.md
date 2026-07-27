@@ -60,6 +60,12 @@ deploi watch -s staging ./
 
 # View deploy history
 deploi history
+
+# Create a project config interactively
+deploi config init
+
+# Test SSH connectivity
+deploi check -v
 ```
 
 ## Config
@@ -140,8 +146,10 @@ See `config.toml.example` for a full reference.
 | `history [id]` | Show deploy history |
 | `rollback [id]` | Rollback to a previous deploy |
 | `servers` | List configured servers |
+| `check` | Test SSH connectivity with latency |
 | `config generate` | Create a default config file |
 | `config validate` | Validate config syntax |
+| `config init` | Create a project-level deploi.toml interactively |
 
 ## Flags
 

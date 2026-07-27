@@ -108,6 +108,9 @@ deploi rollback                   # undo latest
 # Config & Info
 deploi servers
 deploi servers --json
+deploi check             # test SSH connectivity
+deploi check -v          # show SSH version
+deploi config init       # create project config
 deploi config validate
 deploi config generate -o -
 ```
