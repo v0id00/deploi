@@ -64,17 +64,35 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
       - name: Build (${{ matrix.os.name }})
-        working-directory: ${{ github.workspace }}/cmd/deploi
-        run: mkdir -p ../dist && GOOS=${{ matrix.os.goos }} GOARCH=${{ matrix.os.goarch }} VERSION=$(git describe --tags --always 2>/dev/null || echo dev) go build -ldflags="-X 'github.com/v0id00/deploi/internal/app.version='$VERSION" -o "../dist/deploi-${{ matrix.os.name }}" .
-      - name: Checksum
-        run: cd "${{ github.workspace }}/dist" && sha256sum deploi-${{ matrix.os.name }}* > deploi-${{ matrix.os.name }}.sha256 || echo "no dist"
+        env:
+          GOOS: ${{ matrix.os.goos }}
+          GOARCH: ${{ matrix.os.goarch }}
+        run: |
+          set -e
+          mkdir -p dist
+          VERSION=$(git describe --tags --always 2>/dev/null || echo dev)
+          go build \
+            -ldflags="-X 'github.com/v0id00/deploi/internal/app.version=$VERSION'" \
+            -o "dist/deploi-${{ matrix.os.name }}" \
+            ./cmd/deploi/
+
+      - name: Checksum (${{ matrix.os.name }})
+        run: |
+          set -e
+          cd dist
+          sha256sum deploi-${{ matrix.os.name }} > deploi-${{ matrix.os.name }}.sha256
+
       - name: Upload artifacts
-        if: success() || failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: deploi-${{ matrix.os.name }}
-          path: dist/
+          path: |
+            dist/deploi-${{ matrix.os.name }}
+            dist/deploi-${{ matrix.os.name }}.sha256
+          if-no-files-found: warn
 
   publish:
     name: Publish Release
@@ -86,10 +104,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist/
+
       - name: Prepare release assets
         run: |
           mkdir -p release-assets
           find dist/ -type f \( -name "deploi-*" -o -name "*.sha256" \) -exec cp {} release-assets/ \;
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
