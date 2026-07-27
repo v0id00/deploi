@@ -65,25 +65,10 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Build (${{ matrix.os.name }})
-        run: |
-          mkdir -p ../dist
-          export GOOS=${{ matrix.os.goos }}
-          export GOARCH=${{ matrix.os.goarch }}
-          export VERSION=$(git describe --tags --always 2>/dev/null || echo dev)
-          EXT=""
-          if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
-          go build \
-            -ldflags="-X 'github.com/v0id00/deploi/internal/app.version=${VERSION}'" \
-            -o "../dist/deploi-${{ matrix.os.name }}${EXT}" .
         working-directory: ${{ github.workspace }}/cmd/deploi
+        run: mkdir -p ../dist && GOOS=${{ matrix.os.goos }} GOARCH=${{ matrix.os.goarch }} VERSION=$(git describe --tags --always 2>/dev/null || echo dev) go build -ldflags="-X 'github.com/v0id00/deploi/internal/app.version='$VERSION" -o "../dist/deploi-${{ matrix.os.name }}" .
       - name: Checksum
-        run: |
-          if [ ! -d "${{ github.workspace }}/dist" ]; then
-            echo "dist/ not found — build may have failed. Skipping checksum."
-            exit 0
-          fi
-          cd "${{ github.workspace }}/dist"
-          sha256sum deploi-${{ matrix.os.name }}* > deploi-${{ matrix.os.name }}.sha256
+        run: cd "${{ github.workspace }}/dist" && sha256sum deploi-${{ matrix.os.name }}* > deploi-${{ matrix.os.name }}.sha256 || echo "no dist"
       - name: Upload artifacts
         if: success() || failure()
         uses: actions/upload-artifact@v4
