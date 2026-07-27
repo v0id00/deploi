@@ -336,21 +336,22 @@ func runRsync(srv config.Server, cfg RunConfig, exclude []string) TransferResult
 
 	cmd := exec.CommandContext(ctx, "rsync", args...)
 	cmd.Dir = baseDir
-	cmd.Stdin = os.Stdin // pass through SSH password prompts
+	cmd.Stdin = os.Stdin   // pass through SSH password prompts
+	cmd.Stderr = os.Stderr // show SSH prompts + errors in real time
 
 	if cfg.Verbose {
 		fmt.Fprintf(os.Stderr, "  rsync %s\n", strings.Join(args, " "))
 	}
 
-	// Capture combined stdout+stderr via pipe, while keeping stdin connected
-	output, err := cmd.CombinedOutput()
+	// Capture stdout only (rsync file list) for summary parsing
+	output, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return TransferResult{Status: "error",
-				Error: enrichRsyncError(err, output, cfg, "timeout")}
+				Error: enrichRsyncError(err, nil, cfg, "timeout")}
 		}
 		return TransferResult{Status: "error",
-			Error: enrichRsyncError(err, output, cfg, "")}
+			Error: enrichRsyncError(err, nil, cfg, "")}
 	}
 
 	// Parse rsync output into structured data
