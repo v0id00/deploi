@@ -309,7 +309,7 @@ func runRsync(srv config.Server, cfg RunConfig, exclude []string) TransferResult
 	}
 
 	switch cfg.Operation {
-	case OpPush:
+	case OpPush, OpSync:
 		args = append(args, relFiles...)
 		args = append(args, remote)
 	case OpPull:

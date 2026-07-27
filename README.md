@@ -158,6 +158,7 @@ See `config.toml.example` for a full reference.
 | `--no-preview` | Skip diff preview confirmation |
 | `--no-gitignore` | Disable .gitignore auto-detection |
 | `--no-staged` | Exclude staged files from git-diff |
+| `-v, --verbose` | Show detailed rsync output and command |
 | `--json` | JSON output |
 | `-q, --quiet` | Suppress progress and banners |
 | `--force` | Skip confirmations |

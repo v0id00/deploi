@@ -141,6 +141,7 @@ deploi config generate -o -
 | `--no-preview` | Skip diff confirmation |
 | `--no-gitignore` | Disable .gitignore |
 | `--no-staged` | Exclude staged files from git-diff |
+| `-v, --verbose` | Show detailed rsync output |
 | `--json` | JSON output |
 | `-q, --quiet` | Suppress output |
 
