@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,8 @@ type TransferResult struct {
 	Server     string `json:"server"`
 	Files      int    `json:"files"`
 	Bytes      int64  `json:"bytes"`
+	Speed      string `json:"speed,omitempty"`
+	TotalSize  string `json:"total_size,omitempty"`
 	Elapsed    string `json:"elapsed"`
 	Status     string `json:"status"` // "ok" or "error"
 	Error      string `json:"error,omitempty"`
@@ -336,14 +339,27 @@ func runRsync(srv config.Server, cfg RunConfig, exclude []string) TransferResult
 		return TransferResult{Status: "error", Error: fmt.Sprintf("rsync: %v\n%s", err, string(output))}
 	}
 
-	if cfg.Verbose {
-		os.Stderr.Write(output)
-	} else if !cfg.Quiet && !cfg.DryRun {
-		os.Stderr.Write(output)
+	// Parse rsync output into structured data
+	parsed := parseRsyncOutput(string(output))
+
+	if !cfg.Quiet && !cfg.DryRun {
+		if cfg.Verbose {
+			for _, f := range parsed.Files {
+				fmt.Fprintf(os.Stderr, "  📄 %s\n", f)
+			}
+		}
+		if parsed.Summary != "" {
+			fmt.Fprintf(os.Stderr, "  %s\n", parsed.Summary)
+		}
 	}
 
-	fileCount := parseRsyncOutput(string(output))
-	return TransferResult{Status: "ok", Files: fileCount}
+	return TransferResult{
+		Status:    "ok",
+		Files:     parsed.FileCount,
+		Bytes:     parsed.BytesSent,
+		Speed:     parsed.Speed,
+		TotalSize: parsed.TotalSize,
+	}
 }
 
 // runSCP executes the transfer using SCP.
@@ -447,6 +463,78 @@ func runSSH(srv config.Server, cmdStr string) (string, error) {
 	return string(out), nil
 }
 
+// rsyncParsed holds parsed rsync output.
+type rsyncParsed struct {
+	Files     []string
+	FileCount int
+	BytesSent int64
+	Speed     string
+	TotalSize string
+	Summary   string
+}
+
+// parseRsyncOutput parses rsync output into structured data.
+func parseRsyncOutput(output string) rsyncParsed {
+	var p rsyncParsed
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+
+	var sentRe = regexp.MustCompile(`sent\s+([\d,\.]+)\s+bytes\s+received\s+[\d,\.]+\s+bytes\s+([\d\.,]+)\s+bytes/sec`)
+	var totalRe = regexp.MustCompile(`total size is\s+([\d,\.]+)\s+speedup\s+([\d\.,]+)`)
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || line == "sending incremental file list" {
+			continue
+		}
+
+		if m := sentRe.FindStringSubmatch(line); m != nil {
+			bytesStr := strings.ReplaceAll(m[1], ",", "")
+			fmt.Sscanf(bytesStr, "%d", &p.BytesSent)
+			p.Speed = m[2] + "/s"
+			continue
+		}
+
+		if m := totalRe.FindStringSubmatch(line); m != nil {
+			p.TotalSize = m[1]
+			p.Summary = fmt.Sprintf("📦 %s  ⚡ %s/s  📊 %s total  🚀 %sx",
+				formatBytes(p.BytesSent), p.Speed, p.TotalSize, m[2])
+			continue
+		}
+
+		if strings.HasPrefix(line, "delta-transmission") ||
+			strings.HasPrefix(line, "total:") ||
+			strings.HasPrefix(line, "sent ") ||
+			strings.HasPrefix(line, "receiving") ||
+			strings.HasPrefix(line, "created directory") ||
+			strings.HasPrefix(line, "removing duplicate") {
+			continue
+		}
+
+		p.Files = append(p.Files, line)
+		p.FileCount++
+	}
+
+	if p.Summary == "" {
+		p.Summary = fmt.Sprintf("📦 %d files  %s transferred", p.FileCount, formatBytes(p.BytesSent))
+	}
+
+	return p
+}
+
+// formatBytes formats byte counts human-readable.
+func formatBytes(b int64) string {
+	switch {
+	case b > 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(b)/(1<<30))
+	case b > 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(b)/(1<<20))
+	case b > 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(b)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
+}
+
 // buildSSHOpts builds the SSH options string for rsync -e.
 func buildSSHOpts(srv config.Server) string {
 	opts := "ssh"
@@ -458,26 +546,6 @@ func buildSSHOpts(srv config.Server) string {
 		opts += fmt.Sprintf(" -i %s", keyPath)
 	}
 	return opts
-}
-
-// parseRsyncOutput attempts to count transferred files from rsync output.
-func parseRsyncOutput(output string) int {
-	lines := strings.Split(output, "\n")
-	count := 0
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "sending") || strings.HasPrefix(line, "receiving") ||
-			strings.HasPrefix(line, "sent ") || strings.HasPrefix(line, "total ") ||
-			strings.HasPrefix(line, ".") || strings.HasPrefix(line, "created") ||
-			strings.HasPrefix(line, "deleting") {
-			continue
-		}
-		if strings.HasSuffix(line, "/") {
-			continue
-		}
-		count++
-	}
-	return count
 }
 
 // filterServers filters servers by regex and tags.

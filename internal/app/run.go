@@ -1444,17 +1444,21 @@ func printResults(results []transfer.TransferResult) {
 			if r.HooksPre > 0 || r.HooksPost > 0 {
 				hooks = fmt.Sprintf(" ⚡%d/%d", r.HooksPre, r.HooksPost)
 			}
+			extra := ""
+			if r.Speed != "" {
+				extra = fmt.Sprintf("  ⚡%s", r.Speed)
+			}
 			if r.Files > 0 {
-				fmt.Fprintf(os.Stdout, "  %s %-20s  %d files%s  %s\n",
-					color.GreenString("✓"), r.Server, r.Files, hooks, r.Elapsed)
+				fmt.Fprintf(os.Stdout, "  %s %-20s  %d files%s%s  %s\n",
+					color.GreenString("✓"), r.Server, r.Files, extra, hooks, r.Elapsed)
 			} else {
-				fmt.Fprintf(os.Stdout, "  %s %-20s%s  %s\n",
-					color.GreenString("✓"), r.Server, hooks, r.Elapsed)
+				fmt.Fprintf(os.Stdout, "  %s %-20s%s%s  %s\n",
+					color.GreenString("✓"), r.Server, extra, hooks, r.Elapsed)
 			}
 		} else {
 			fail++
 			errStr := r.Error
-			if len(errStr) > 80 { errStr = errStr[:77] + "..." }
+			if len(errStr) > 120 { errStr = errStr[:117] + "..." }
 			fmt.Fprintf(os.Stdout, "  %s %-20s  %s\n",
 				color.RedString("✗"), r.Server, errStr)
 		}
