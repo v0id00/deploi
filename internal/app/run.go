@@ -101,16 +101,16 @@ File selection:
   --select <mode>   Selection mode: manual, fzf, editor, all
   --filter <type>   Filter: git-diff, git-commit, git-branch, path
 
-Use --filter git-diff to pick changed files, or --select fzf to browse files interactively.
+If neither is specified, defaults to --filter git-diff (changed files).
 Use -S to pick target servers interactively via fzf.
 
-|Examples:
-  deploi push -s prod --filter git-diff
-  deploi push -S --filter git-diff               # pick servers via fzf
-  deploi push -S -t prod --filter git-diff        # filter by tag, then pick
-  deploi push -s prod --filter git-diff -P        # pick changed files via fzf
-  deploi push -s prod --select fzf --filter git-commit   # pick commit via fzf
-  deploi push -s prod --select fzf --filter path         # pick files via fzf
+Examples:
+  deploi push -s prod                         # changed files (default)
+  deploi push -s prod --filter git-diff        # same as above
+  deploi push -s prod --filter git-commit      # pick a commit interactively
+  deploi push -s prod --filter git-branch --branch main  # diff with branch
+  deploi push -s prod --select fzf             # browse and pick files
+  deploi push -s prod --select all             # all files in current dir
   deploi push -s staging --profile assets
   deploi pull -s staging --select all remote/path/
   deploi watch -s staging ./
@@ -178,14 +178,16 @@ File selection:
   --filter <type>   Filter: git-diff, git-commit, git-branch, path
   (path args)       Explicit file paths (manual)
 
-Use --filter git-diff for changed files, or --select fzf to browse.
+Defaults to --filter git-diff (changed files) when neither is given.
 Use --no-staged to exclude staged files from git-diff selection.
 
 Examples:
-  deploi push --select fzf --filter git-diff -S    # pick changed files via fzf
-  deploi push --select fzf --filter path -S        # pick all files via fzf
-  deploi push --select all --filter path ./src     # transfer all files
-  deploi push -S -s prod --filter git-diff         # push changed files to prod`,
+  deploi push -s prod                          # changed files (default)
+  deploi push -s prod --filter git-diff        # same as above
+  deploi push -s prod --filter git-commit      # pick a commit interactively
+  deploi push -s prod --select fzf             # browse and pick files
+  deploi push -s prod --select all             # all files in current dir
+  deploi push -S -s prod --filter git-diff     # push changed files to prod`,
 		Args: cobra.MaximumNArgs(100),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ac.paths = args
@@ -1288,6 +1290,11 @@ func resolveFiles(ac *appConfig, editor string) (*picker.FileSet, error) {
 	sel := ac.selectMode
 	fil := ac.filterMode
 
+	// Default: if nothing specified, use git-diff
+	if sel == "" && fil == "" {
+		fil = "git-diff"
+	}
+
 	// Default filter for each select mode
 	if fil == "" {
 		switch sel {
@@ -1391,6 +1398,10 @@ func resolveFilter(fil string, ac *appConfig, editor string, useFZF bool) (*pick
 		})
 
 	case "git-commit":
+		// Default to interactive commit pick when no commit hash specified
+		if ac.commit == "" && !useFZF && !ac.pick {
+			ac.pick = true
+		}
 		if useFZF || ac.pick {
 			if ac.commit != "" {
 				// First resolve files from the commit, then show in fzf
@@ -1458,7 +1469,7 @@ func resolveFilter(fil string, ac *appConfig, editor string, useFZF bool) (*pick
 			})
 		}
 		if len(ac.paths) == 0 {
-			return nil, fmt.Errorf("file paths required with --filter path (provide as arguments)")
+			return nil, fmt.Errorf("file paths required. Usage: deploi push <file1> <file2> ... or use --filter git-diff to select changed files")
 		}
 		return picker.Pick(picker.PickConfig{
 			Source:  picker.SourceManual,
@@ -1467,7 +1478,7 @@ func resolveFilter(fil string, ac *appConfig, editor string, useFZF bool) (*pick
 		})
 
 	default:
-		return nil, fmt.Errorf("unknown filter: %s (use: git-diff, git-commit, git-branch, path)", fil)
+		return nil, fmt.Errorf("unknown filter: %s (use: git-diff, git-commit, git-branch, path, fzf, editor, all)", fil)
 	}
 }
 
