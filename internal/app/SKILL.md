@@ -49,7 +49,7 @@ Config search order:
 3. `~/.config/deploi/config.toml` (Linux/macOS — XDG)
 4. `%APPDATA%/deploi/config.toml` (Windows)
 5. `~/.deploi/config.toml` (home subdirectory)
-6. `~/.deploi.toml` (home file — legacy)
+6. `~/.deploi.toml` (home file — fallback)
 
 ```toml
 [defaults]
@@ -127,8 +127,6 @@ Two parameters:
 | `select fzf + filter git-commit` | `--select fzf --filter git-commit` |
 | `select all + filter path` | `--select all --filter path ./dir/` |
 
-Legacy `-m` still works (see README for mapping).
-
 ## Key Flags
 
 | Flag | Description |
@@ -136,7 +134,6 @@ Legacy `-m` still works (see README for mapping).
 | `-s, --server` | Glob filter for servers |
 | `-t, --tags` | Tag filter (OR) |
 | `-S, --pick-server` | Pick servers interactively via fzf |
-| `-m, --method` | File selection method (legacy) |
 | `--select` | Selection mode: manual, fzf, editor, all |
 | `--filter` | Filter: git-diff, git-commit, git-branch, path |
 | `-P, --pick` | Interactive commit pick |
@@ -148,6 +145,8 @@ Legacy `-m` still works (see README for mapping).
 | `-v, --verbose` | Show detailed rsync output |
 | `--json` | JSON output |
 | `-q, --quiet` | Suppress output |
+| `--force` | Skip all confirmations and previews |
+| `--no-confirm` | Skip "deploy to all servers?" confirmation |
 
 ## Architecture Notes
 

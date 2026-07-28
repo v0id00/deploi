@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,10 +36,11 @@ type Entry struct {
 
 // Store manages the deploy history file.
 type Store struct {
-	Dir    string
-	file   string
-	index  map[int]string // id → filename
-	maxID  int
+	Dir   string
+	file  string
+	index map[int]string // id → filename
+	maxID int
+	mu    sync.Mutex
 }
 
 // NewStore creates or opens a history store.
@@ -75,6 +77,9 @@ func NewStore(dir string) (*Store, error) {
 
 // Record saves a deploy entry and writes it to history.
 func (s *Store) Record(entry Entry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.maxID++
 	entry.ID = s.maxID
 	if entry.Timestamp.IsZero() {
@@ -171,7 +176,13 @@ func (s *Store) saveIndex() error {
 	if err != nil {
 		return fmt.Errorf("marshal index: %w", err)
 	}
-	return os.WriteFile(s.file, data, 0644)
+
+	// Atomic write: temp file + rename (prevents concurrent-process corruption)
+	tmpFile := s.file + ".tmp"
+	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+		return fmt.Errorf("write index tmp: %w", err)
+	}
+	return os.Rename(tmpFile, s.file)
 }
 
 // FormatEntry formats an entry for human-readable display.

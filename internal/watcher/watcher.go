@@ -15,10 +15,10 @@ import (
 
 // Config for the file watcher.
 type Config struct {
-	Paths    []string // directories to watch
-	GitDir   string   // git working directory
-	Method   string   // file selection method to use on change
-	Delay    time.Duration // debounce delay (default: 500ms)
+	Paths    []string             // directories to watch
+	GitDir   string               // git working directory
+	Method   string               // file selection method to use on change
+	Delay    time.Duration        // debounce delay (default: 500ms)
 	OnChange func(files []string) // callback when changes are detected
 }
 

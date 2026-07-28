@@ -5,8 +5,10 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/v0id00/deploi/internal/config"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 )
 
 // Operation type.
@@ -69,11 +72,11 @@ type RunConfig struct {
 	Quiet       bool
 	RsyncOpts   string // additional rsync options
 	Exclude     []string
-	NoGitignore bool  // disable .gitignore auto-detection
+	NoGitignore bool   // disable .gitignore auto-detection
 	GitDir      string // git directory for .gitignore detection
 	BaseDir     string // base directory for relative path resolution (default: cwd)
-	Preview     bool  // show diff preview before transfer
-	Verbose     bool  // show detailed rsync output
+	Preview     bool   // show diff preview before transfer
+	Verbose     bool   // show detailed rsync output
 }
 
 // Run executes the transfer on all matching servers.
@@ -170,8 +173,8 @@ func executeOnServer(srv config.Server, cfg RunConfig, exclude []string) Transfe
 			out, err := runSSH(srv, cmd)
 			if err != nil {
 				return TransferResult{
-					Status: "error",
-					Error:  fmt.Sprintf("post-hook %q failed: %v\n%s", cmd, err, out),
+					Status:   "error",
+					Error:    fmt.Sprintf("post-hook %q failed: %v\n%s", cmd, err, out),
 					HooksPre: r.HooksPre,
 				}
 			}
@@ -200,7 +203,7 @@ func buildExcludeList(cfg RunConfig) []string {
 		if gitDir == "" {
 			gitDir, _ = os.Getwd()
 		}
-		patterns := readGitignore(gitDir)
+		patterns := ReadGitignore(gitDir)
 		for _, p := range patterns {
 			if !excludeMap[p] {
 				excludeMap[p] = true
@@ -212,8 +215,8 @@ func buildExcludeList(cfg RunConfig) []string {
 	return list
 }
 
-// readGitignore reads .gitignore and .gitignore patterns, returning rsync --exclude args.
-func readGitignore(dir string) []string {
+// ReadGitignore reads .gitignore and .gitignore patterns, returning rsync --exclude args.
+func ReadGitignore(dir string) []string {
 	var patterns []string
 	gitignorePath := filepath.Join(dir, ".gitignore")
 	f, err := os.Open(gitignorePath)
@@ -281,7 +284,7 @@ func runRsync(srv config.Server, cfg RunConfig, exclude []string) TransferResult
 	// Backup overwritten files for rollback
 	backupDir := ""
 	if !cfg.DryRun && cfg.Operation == OpPush {
-		backupDir = filepath.Join(remoteDir, ".deploi-backups", fmt.Sprintf("%d", time.Now().Unix()))
+		backupDir = path.Join(remoteDir, ".deploi-backups", fmt.Sprintf("%d", time.Now().Unix()))
 		args = append(args, "--backup", "--backup-dir", backupDir)
 	}
 	if cfg.RsyncOpts != "" {
@@ -366,7 +369,10 @@ func runRsync(srv config.Server, cfg RunConfig, exclude []string) TransferResult
 // enrichRsyncError enriches rsync errors with human-readable explanations.
 func enrichRsyncError(err error, output []byte, cfg RunConfig, kind string) string {
 	exitCode := 1
-	if exitErr, ok := err.(*exec.ExitError); ok {
+	type exitCoder interface {
+		ExitCode() int
+	}
+	if exitErr, ok := err.(exitCoder); ok {
 		exitCode = exitErr.ExitCode()
 	}
 
@@ -491,30 +497,28 @@ func runSCP(srv config.Server, cfg RunConfig) TransferResult {
 
 // runSSH executes commands via SSH directly.
 func runSSH(srv config.Server, cmdStr string) (string, error) {
-	keyFile := srv.KeyFile
-	if keyFile == "" {
-		home, _ := os.UserHomeDir()
-		keyFile = filepath.Join(home, ".ssh", "id_ed25519")
-		if _, err := os.Stat(keyFile); err != nil {
-			keyFile = filepath.Join(home, ".ssh", "id_rsa")
-		}
-	}
-	keyFile = config.ExpandPath(keyFile)
+	// Build auth methods: try agent first, then key files
+	var authMethods []ssh.AuthMethod
 
-	key, err := os.ReadFile(keyFile)
-	if err != nil {
-		return "", fmt.Errorf("read SSH key: %w", err)
+	// 1. SSH agent (if available)
+	if a := sshAgentAuth(); a != nil {
+		authMethods = append(authMethods, a)
 	}
 
-	signer, err := ssh.ParsePrivateKey(key)
-	if err != nil {
-		return "", fmt.Errorf("parse SSH key: %w", err)
+	// 2. Key file(s)
+	signer, err := keyFileSigner(srv)
+	if err == nil {
+		authMethods = append(authMethods, ssh.PublicKeys(signer))
+	}
+
+	if len(authMethods) == 0 {
+		return "", fmt.Errorf("no SSH authentication method available for %q: check ssh-agent or configure key_file", srv.Name)
 	}
 
 	hostPort := fmt.Sprintf("%s:%d", srv.Host, srv.Port)
 	client, err := ssh.Dial("tcp", hostPort, &ssh.ClientConfig{
 		User:            srv.User,
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		Auth:            authMethods,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec
 		Timeout:         10 * time.Second,
 	})
@@ -537,6 +541,55 @@ func runSSH(srv config.Server, cmdStr string) (string, error) {
 	return string(out), nil
 }
 
+// sshAgentAuth returns an SSH auth method using the local SSH agent, or nil if unavailable.
+func sshAgentAuth() ssh.AuthMethod {
+	sock := os.Getenv("SSH_AUTH_SOCK")
+	if sock == "" {
+		return nil
+	}
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		return nil
+	}
+	agentClient := agent.NewClient(conn)
+	return ssh.PublicKeysCallback(agentClient.Signers)
+}
+
+// keyFileSigner tries to find and parse an SSH key file for the given server.
+// It checks: configured key_file, then default paths (id_ed25519, id_ecdsa, id_rsa).
+func keyFileSigner(srv config.Server) (ssh.Signer, error) {
+	keyFile := srv.KeyFile
+	if keyFile == "" {
+		home, _ := os.UserHomeDir()
+		for _, name := range []string{"id_ed25519", "id_ecdsa", "id_rsa"} {
+			candidate := filepath.Join(home, ".ssh", name)
+			if _, err := os.Stat(candidate); err == nil {
+				keyFile = candidate
+				break
+			}
+		}
+	}
+	if keyFile == "" {
+		return nil, fmt.Errorf("no SSH key found for %q", srv.Name)
+	}
+
+	keyFile = config.ExpandPath(keyFile)
+	if _, err := os.Stat(keyFile); err != nil {
+		return nil, fmt.Errorf("SSH key not found: %s. Configure key_file for server %q or ensure ~/.ssh/id_ed25519/id_ecdsa/id_rsa exists", keyFile, srv.Name)
+	}
+
+	key, err := os.ReadFile(keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("read SSH key: %w", err)
+	}
+
+	signer, err := ssh.ParsePrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("parse SSH key: %w", err)
+	}
+	return signer, nil
+}
+
 // rsyncParsed holds parsed rsync output.
 type rsyncParsed struct {
 	Files     []string
@@ -553,7 +606,7 @@ func parseRsyncOutput(output string) rsyncParsed {
 	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
 
 	var sentRe = regexp.MustCompile(`sent\s+([\d,\.]+)\s+bytes\s+received\s+[\d,\.]+\s+bytes\s+([\d\.,]+)\s+bytes/sec`)
-	var totalRe = regexp.MustCompile(`total size is\s+([\d,\.]+)\s+speedup\s+([\d\.,]+)`)
+	var totalRe = regexp.MustCompile(`total size is\s+([\d,\\.]+)\s+speedup\s*(?:is\s+)?([\d\\.,]+)`)
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -598,11 +651,11 @@ func parseRsyncOutput(output string) rsyncParsed {
 // formatBytes formats byte counts human-readable.
 func formatBytes(b int64) string {
 	switch {
-	case b > 1<<30:
+	case b >= 1<<30:
 		return fmt.Sprintf("%.1f GB", float64(b)/(1<<30))
-	case b > 1<<20:
+	case b >= 1<<20:
 		return fmt.Sprintf("%.1f MB", float64(b)/(1<<20))
-	case b > 1<<10:
+	case b >= 1<<10:
 		return fmt.Sprintf("%.1f KB", float64(b)/(1<<10))
 	default:
 		return fmt.Sprintf("%d B", b)
@@ -636,7 +689,7 @@ func filterServers(servers []config.Server, regex string, tags []string) []confi
 			}
 		}
 		if len(tags) > 0 {
-			if !hasAnyTag(s.Tags, tags) {
+			if !HasAnyTag(s.Tags, tags) {
 				continue
 			}
 		}
@@ -645,7 +698,7 @@ func filterServers(servers []config.Server, regex string, tags []string) []confi
 	return filtered
 }
 
-func hasAnyTag(serverTags, filterTags []string) bool {
+func HasAnyTag(serverTags, filterTags []string) bool {
 	for _, ft := range filterTags {
 		for _, st := range serverTags {
 			if st == ft {
@@ -710,28 +763,6 @@ func EnsureRemoteDirs(srv config.Server, dirs []string) error {
 		return fmt.Errorf("mkdir remote: %w\n%s", err, out)
 	}
 	return nil
-}
-
-// ListRemoteFiles lists files in a remote directory via SSH.
-func ListRemoteFiles(srv config.Server, remotePath string) ([]string, error) {
-	out, err := runSSH(srv, fmt.Sprintf("ls -1 %s", remotePath))
-	if err != nil {
-		return nil, err
-	}
-	files := strings.Split(strings.TrimSpace(out), "\n")
-	var result []string
-	for _, f := range files {
-		if f != "" {
-			result = append(result, f)
-		}
-	}
-	return result, nil
-}
-
-// IsTerminal checks if stderr is a terminal.
-func IsTerminal() bool {
-	stat, _ := os.Stderr.Stat()
-	return (stat.Mode() & os.ModeCharDevice) != 0
 }
 
 // GitDiffSummary generates a summary of what will be transferred.
@@ -805,12 +836,6 @@ func RunRollback(servers []config.Server, opts RollbackOptions) []TransferResult
 			remote := fmt.Sprintf("%s:%s", s.AddrNoPort(), remoteDir)
 
 			args := []string{"-avz"}
-			for _, ex := range opts.Exclude {
-				args = append(args, "--exclude", ex)
-			}
-			for _, ex := range s.Exclude {
-				args = append(args, "--exclude", ex)
-			}
 			if sshOpt := buildSSHOpts(s); sshOpt != "" {
 				args = append(args, "-e", sshOpt)
 			}

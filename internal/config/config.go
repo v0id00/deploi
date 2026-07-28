@@ -22,9 +22,9 @@ type Defaults struct {
 	Force bool `toml:"force,omitempty"`
 
 	// Output
-	JSON      bool `toml:"json,omitempty"`
-	Quiet     bool `toml:"quiet,omitempty"`
-	ShowBar   bool `toml:"show_progress,omitempty"`
+	JSON    bool `toml:"json,omitempty"`
+	Quiet   bool `toml:"quiet,omitempty"`
+	ShowBar bool `toml:"show_progress,omitempty"`
 
 	// Default filters
 	ServerFilter string `toml:"server,omitempty"`
@@ -66,6 +66,12 @@ func (d *Defaults) SetDefaults() {
 	if d.RsyncBin == "" {
 		d.RsyncBin = "rsync"
 	}
+	// ShowBar defaults to true
+	d.ShowBar = true
+
+	// Confirm when targeting ALL servers defaults to true (opt-out, not opt-in)
+	d.ConfirmWithoutFilter = true
+
 	// RespectGitignore defaults to true
 	if d.RespectGitignore == nil {
 		t := true
@@ -102,7 +108,7 @@ type Server struct {
 	Host     string   `toml:"host"`
 	Port     int      `toml:"port,omitempty"`
 	User     string   `toml:"user"`
-	Password string   `toml:"password,omitempty"`
+	Password string   `toml:"password,omitempty"` // DEPRECATED: not used (SSH key auth only). Will be removed in a future version.
 	KeyFile  string   `toml:"key_file,omitempty"` // SSH key path
 	Method   string   `toml:"method,omitempty"`   // "ssh", "sftp", "rsync" (default: rsync)
 	Tags     []string `toml:"tags,omitempty"`
@@ -146,9 +152,9 @@ func (s Server) AddrNoPort() string {
 
 // Config is the top-level TOML configuration.
 type Config struct {
-	Defaults Defaults            `toml:"defaults,omitempty"`
-	Servers  map[string]Server   `toml:"servers"`
-	Profiles map[string]Profile  `toml:"profiles,omitempty"`
+	Defaults Defaults           `toml:"defaults,omitempty"`
+	Servers  map[string]Server  `toml:"servers"`
+	Profiles map[string]Profile `toml:"profiles,omitempty"`
 }
 
 // Load reads and parses a TOML config file.
@@ -170,6 +176,10 @@ func Load(path string) (*Config, error) {
 
 	// Apply per-server defaults
 	for name, srv := range cfg.Servers {
+		srv.Name = name
+		if srv.Password != "" {
+			fmt.Fprintf(os.Stderr, "  ⚠ Server %q: 'password' field is deprecated and ignored (SSH key auth only). Remove it from config.\n", name)
+		}
 		srv.Name = name
 		if srv.Port == 0 {
 			srv.Port = 22
@@ -202,7 +212,7 @@ func Load(path string) (*Config, error) {
 //     Linux/macOS: ~/.config/deploi/config.toml  (XDG)
 //     Windows:     %APPDATA%/deploi/config.toml
 //  4. ~/.deploi/config.toml (home subdirectory — universal fallback)
-//  5. ~/.deploi.toml (home file — legacy fallback)
+//  5. ~/.deploi.toml (home file — fallback)
 func FindConfigPath(explicit string) (string, error) {
 	if explicit != "" {
 		if _, err := os.Stat(explicit); err != nil {
@@ -271,7 +281,7 @@ func DefaultExample() string {
 #   ~/.config/deploi/config.toml     (Linux/macOS — XDG)
 #   %APPDATA%/deploi/config.toml     (Windows)
 #   ~/.deploi/config.toml            (universal home dir)
-#   ~/.deploi.toml                   (legacy fallback)
+#   ~/.deploi.toml                   (fallback)
 
 [defaults]
 # Connection / execution

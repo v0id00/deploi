@@ -16,7 +16,8 @@ Like [propq](https://github.com/v0id00/propq) (multi-server SQL executor) but fo
 - **Rollback**: restore previous deploy state with `deploi rollback`
 - **Watch mode**: auto-deploy on file changes (`deploi watch`)
 - **Concurrent**: send files to many servers at once (goroutine + semaphore)
-- **Interactive**: fzf picker or $EDITOR for on-the-fly file selection
+- **SSH agent support**: hooks use native Go SSH client with agent and key file auth (ed25519/ecdsa/rsa)
+- **Exit code reflects errors**: deploy failures return non-zero exit code (CI-safe)
 - **Config-driven**: TOML config with server definitions, tags for filtering
 
 ## Quick Start
@@ -29,28 +30,28 @@ deploi config generate
 deploi servers
 
 # Push changed files (git-diff) to production servers
-deploi push -s prod -m git-diff
+deploi push -s prod --filter git-diff
 
 # Push specific files
 deploi push -s prod config/app.php
 
 # Push files from a commit (interactive commit pick)
-deploi push -s prod -m git-commit -P
+deploi push -s prod --select fzf --filter git-commit -P
 
 # Push with fzf interactive file selection
-deploi push -s prod -m fzf
+deploi push -s prod --select fzf
 
 # Push using a profile
 deploi push -s staging --profile assets
 
 # Pick servers interactively via fzf
-deploi push -S -t prod -m git-diff
+deploi push -S -t prod --filter git-diff
 
 # Pull files from a server
-deploi pull -s staging -m all remote/path/
+deploi pull -s staging --select all remote/path/
 
 # Sync (dry-run) to see what would change
-deploi sync -s prod -m git-diff
+deploi sync -s prod --filter git-diff
 
 # Run SSH commands
 deploi run -s prod "systemctl reload nginx"
@@ -76,7 +77,7 @@ Config search order:
 3. `~/.config/deploi/config.toml` (Linux/macOS — XDG)
 4. `%APPDATA%/deploi/config.toml` (Windows)
 5. `~/.deploi/config.toml` (home subdirectory)
-6. `~/.deploi.toml` (home file — legacy)
+6. `~/.deploi.toml` (home file — fallback)
 
 ```toml
 [defaults]
@@ -85,6 +86,7 @@ concurrency = 5
 editor = "vim"
 remote_path = "/home/deploy/www/"
 no_preview = false
+confirm_without_filter = true
 exclude = [".git", "node_modules"]
 respect_gitignore = true
 
@@ -165,7 +167,7 @@ Two independent parameters control file selection:
 | `-S, --pick-server` | Pick servers interactively via fzf (also works with -t) |
 | `-c, --config` | Config file path |
 | `--select` | Selection mode (how): manual, fzf, editor, all |
-| `--filter` | Filter mode (what): git-diff, git-commit, git-branch, path |
+| `--filter` | Filter (what): git-diff, git-commit, git-branch, path |
 | `-P, --pick` | Interactive commit pick via fzf |
 | `--profile` | Use a named profile from config |
 | `--dry-run` | Preview changes without transferring |
@@ -175,7 +177,8 @@ Two independent parameters control file selection:
 | `-v, --verbose` | Show detailed rsync output and command |
 | `--json` | JSON output |
 | `-q, --quiet` | Suppress progress and banners |
-| `--force` | Skip confirmations |
+| `--force` | Skip all confirmations and previews |
+| `--no-confirm` | Skip "deploy to all servers?" confirmation |
 | `--rsync-opts` | Extra rsync options |
 
 ## Install

@@ -56,12 +56,12 @@ type appConfig struct {
 	// File selection
 	selectMode string // --select: manual, fzf, editor, all
 	filterMode string // --filter: git-diff, git-commit, git-branch, path
-	paths     []string
-	commit    string
-	branch    string
-	pick      bool
-	pickSrv   bool // interactive server selection via fzf
-	remoteDir string
+	paths      []string
+	commit     string
+	branch     string
+	pick       bool
+	pickSrv    bool // interactive server selection via fzf
+	remoteDir  string
 
 	// Profile
 	profile string
@@ -69,6 +69,9 @@ type appConfig struct {
 	// Transfer
 	rsyncOpts string
 	method    string
+
+	// Profile excludes (merged with defaults during push)
+	exclude []string
 
 	// Watch
 	watchDelay int // in seconds
@@ -101,15 +104,15 @@ File selection:
 Use --filter git-diff to pick changed files, or --select fzf to browse files interactively.
 Use -S to pick target servers interactively via fzf.
 
-Examples:
-  deploi push -s prod -m git-diff
-  deploi push -S -m git-diff                # pick servers via fzf
-  deploi push -S -t prod -m git-diff         # filter by tag, then pick
-  deploi push -s prod -m git-diff -P         # pick changed files via fzf
-  deploi push -s prod -m git-commit -P       # pick commit via fzf
-  deploi push -s prod -m fzf-commit           # pick commit + files via fzf
+|Examples:
+  deploi push -s prod --filter git-diff
+  deploi push -S --filter git-diff               # pick servers via fzf
+  deploi push -S -t prod --filter git-diff        # filter by tag, then pick
+  deploi push -s prod --filter git-diff -P        # pick changed files via fzf
+  deploi push -s prod --select fzf --filter git-commit   # pick commit via fzf
+  deploi push -s prod --select fzf --filter path         # pick files via fzf
   deploi push -s staging --profile assets
-  deploi pull -s staging -m all remote/path/
+  deploi pull -s staging --select all remote/path/
   deploi watch -s staging ./
   deploi history
   deploi rollback 3`,
@@ -451,11 +454,16 @@ func newCompletionCmd() *cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			switch args[0] {
-			case "bash": return cmd.Root().GenBashCompletion(os.Stdout)
-			case "zsh": return cmd.Root().GenZshCompletion(os.Stdout)
-			case "fish": return cmd.Root().GenFishCompletion(os.Stdout, true)
-			case "powershell": return cmd.Root().GenPowerShellCompletion(os.Stdout)
-			default: return fmt.Errorf("unknown shell: %s", args[0])
+			case "bash":
+				return cmd.Root().GenBashCompletion(os.Stdout)
+			case "zsh":
+				return cmd.Root().GenZshCompletion(os.Stdout)
+			case "fish":
+				return cmd.Root().GenFishCompletion(os.Stdout, true)
+			case "powershell":
+				return cmd.Root().GenPowerShellCompletion(os.Stdout)
+			default:
+				return fmt.Errorf("unknown shell: %s", args[0])
 			}
 		},
 	}
@@ -538,13 +546,11 @@ func runPushPull(ac *appConfig, op transfer.Operation) error {
 
 	// Apply profile if specified
 	if ac.profile != "" {
-		if p, ok := cfg.Profiles[ac.profile]; ok {
-			applyProfile(ac, p)
-		} else if cfg.Defaults.Profile != "" {
-			if p, ok := cfg.Profiles[cfg.Defaults.Profile]; ok {
-				applyProfile(ac, p)
-			}
+		p, ok := cfg.Profiles[ac.profile]
+		if !ok {
+			return fmt.Errorf("profile %q not found in config", ac.profile)
 		}
+		applyProfile(ac, p)
 	} else if cfg.Defaults.Profile != "" {
 		if p, ok := cfg.Profiles[cfg.Defaults.Profile]; ok {
 			applyProfile(ac, p)
@@ -635,7 +641,7 @@ func runPushPull(ac *appConfig, op transfer.Operation) error {
 		ShowBar:     !ac.quiet && cfg.Defaults.ShowBar,
 		Quiet:       ac.quiet,
 		RsyncOpts:   ac.rsyncOpts,
-		Exclude:     cfg.Defaults.Exclude,
+		Exclude:     mergeExcludes(cfg.Defaults.Exclude, ac.exclude),
 		NoGitignore: ac.noGitignore,
 		GitDir:      cwd(),
 		BaseDir:     cwd(),
@@ -665,6 +671,15 @@ func runPushPull(ac *appConfig, op transfer.Operation) error {
 		}
 	}
 
+	// Ensure remote directory exists (push only, best-effort)
+	if !ac.dryRun && op == transfer.OpPush && tc.RemoteDir != "" {
+		for _, srv := range servers {
+			if err := transfer.EnsureRemoteDirs(srv, []string{tc.RemoteDir}); err != nil {
+				fmt.Fprintf(os.Stderr, "  ⚠ %s: remote dir mkdir failed: %v (transfer will still be attempted)\n", srv.Name, err)
+			}
+		}
+	}
+
 	// Run transfer
 	results := transfer.Run(servers, tc)
 
@@ -679,6 +694,9 @@ func runPushPull(ac *appConfig, op transfer.Operation) error {
 	}
 
 	printResults(results)
+	if transferHasErrors(results) {
+		return fmt.Errorf("push/pull completed with errors on %d server(s)", countErrors(results))
+	}
 	return nil
 }
 
@@ -697,6 +715,20 @@ func runWatch(ac *appConfig) error {
 	}
 
 	mergeDefaults(ac, &cfg.Defaults)
+
+	// Apply default profile if configured
+	if ac.profile != "" {
+		if p, ok := cfg.Profiles[ac.profile]; ok {
+			applyProfile(ac, p)
+		} else {
+			return fmt.Errorf("profile %q not found in config", ac.profile)
+		}
+	} else if cfg.Defaults.Profile != "" {
+		if p, ok := cfg.Profiles[cfg.Defaults.Profile]; ok {
+			applyProfile(ac, p)
+		}
+	}
+
 	watchDirs := ac.paths
 	if len(watchDirs) == 0 {
 		watchDirs = []string{"."}
@@ -864,6 +896,9 @@ func runRollback(args []string) error {
 		Exclude:     cfg.Defaults.Exclude,
 	})
 	printResults(results)
+	if transferHasErrors(results) {
+		return fmt.Errorf("rollback completed with errors on %d server(s)", countErrors(results))
+	}
 	return nil
 }
 
@@ -908,7 +943,7 @@ func runServers(ac *appConfig) error {
 			}
 		}
 		if len(tagList) > 0 {
-			if !hasAnyTag(srv.Tags, tagList) {
+			if !transfer.HasAnyTag(srv.Tags, tagList) {
 				continue
 			}
 		}
@@ -1004,6 +1039,9 @@ func runRemote(ac *appConfig, commands []string) error {
 		return json.NewEncoder(os.Stdout).Encode(results)
 	}
 	printResults(results)
+	if transferHasErrors(results) {
+		return fmt.Errorf("command execution completed with errors on %d server(s)", countErrors(results))
+	}
 	return nil
 }
 
@@ -1103,9 +1141,13 @@ func runConfigInit() error {
 	for _, name := range names {
 		srv := globalCfg.Servers[name]
 		rp := srv.RemotePath
-		if rp == "" { rp = "(default)" }
+		if rp == "" {
+			rp = "(default)"
+		}
 		tagStr := ""
-		if len(srv.Tags) > 0 { tagStr = fmt.Sprintf(" [%s]", strings.Join(srv.Tags, ", ")) }
+		if len(srv.Tags) > 0 {
+			tagStr = fmt.Sprintf(" [%s]", strings.Join(srv.Tags, ", "))
+		}
 		fmt.Fprintf(os.Stderr, "    %s  %s@%s:%d%s  %s\n", name, srv.User, srv.Host, srv.Port, tagStr, rp)
 	}
 	fmt.Fprintln(os.Stderr)
@@ -1148,7 +1190,9 @@ func runConfigInit() error {
 				var cmd string
 				fmt.Scanln(&cmd)
 				cmd = strings.TrimSpace(cmd)
-				if cmd == "" { break }
+				if cmd == "" {
+					break
+				}
 				preCmds = append(preCmds, cmd)
 			}
 			if len(preCmds) > 0 {
@@ -1171,7 +1215,9 @@ func runConfigInit() error {
 				var cmd string
 				fmt.Scanln(&cmd)
 				cmd = strings.TrimSpace(cmd)
-				if cmd == "" { break }
+				if cmd == "" {
+					break
+				}
 				postCmds = append(postCmds, cmd)
 			}
 			if len(postCmds) > 0 {
@@ -1307,10 +1353,34 @@ func resolveFilter(fil string, ac *appConfig, editor string, useFZF bool) (*pick
 	switch fil {
 	case "git-diff":
 		if useFZF {
+			// First resolve git-diff files respecting --no-staged, then show in fzf
+			fs, err := picker.Pick(picker.PickConfig{
+				Source:           picker.SourceGitDiff,
+				GitDir:           baseDir,
+				IncludeStaged:    includeStaged,
+				IncludeUntracked: true,
+			})
+			if err != nil {
+				if !includeStaged {
+					return nil, err
+				}
+				// No git changes and --no-staged not set — show all files via fzf
+				return picker.Pick(picker.PickConfig{
+					Source: picker.SourceFZF,
+					GitDir: baseDir,
+					Editor: editor,
+				})
+			}
+			relFiles := make([]string, len(fs.Files))
+			for i, f := range fs.Files {
+				rel, _ := filepath.Rel(baseDir, f)
+				relFiles[i] = rel
+			}
 			return picker.Pick(picker.PickConfig{
-				Source:          picker.SourceFZF,
-				GitDir:          baseDir,
-				Editor:          editor,
+				Source: picker.SourceFZF,
+				Paths:  relFiles,
+				GitDir: baseDir,
+				Editor: editor,
 			})
 		}
 		return picker.Pick(picker.PickConfig{
@@ -1323,19 +1393,32 @@ func resolveFilter(fil string, ac *appConfig, editor string, useFZF bool) (*pick
 	case "git-commit":
 		if useFZF || ac.pick {
 			if ac.commit != "" {
-				// Specific commit, show files in fzf
-				return picker.Pick(picker.PickConfig{
-					Source: picker.SourceFZF,
+				// First resolve files from the commit, then show in fzf
+				fs, err := picker.Pick(picker.PickConfig{
+					Source: picker.SourceGitCommit,
 					GitDir: baseDir,
 					Commit: ac.commit,
+				})
+				if err != nil {
+					return nil, err
+				}
+				relFiles := make([]string, len(fs.Files))
+				for i, f := range fs.Files {
+					rel, _ := filepath.Rel(baseDir, f)
+					relFiles[i] = rel
+				}
+				return picker.Pick(picker.PickConfig{
+					Source: picker.SourceFZF,
+					Paths:  relFiles,
+					GitDir: baseDir,
 					Editor: editor,
 				})
 			}
 			return picker.Pick(picker.PickConfig{
-				Source:      picker.SourceFZFCommit,
-				GitDir:      baseDir,
-				PickCommit:  true,
-				Editor:      editor,
+				Source:     picker.SourceFZFCommit,
+				GitDir:     baseDir,
+				PickCommit: true,
+				Editor:     editor,
 			})
 		}
 		if ac.commit == "" {
@@ -1368,10 +1451,10 @@ func resolveFilter(fil string, ac *appConfig, editor string, useFZF bool) (*pick
 	case "path":
 		if useFZF {
 			return picker.Pick(picker.PickConfig{
-				Source:  picker.SourceFZF,
-				Paths:   ac.paths,
-				GitDir:  baseDir,
-				Editor:  editor,
+				Source: picker.SourceFZF,
+				Paths:  ac.paths,
+				GitDir: baseDir,
+				Editor: editor,
 			})
 		}
 		if len(ac.paths) == 0 {
@@ -1390,6 +1473,19 @@ func resolveFilter(fil string, ac *appConfig, editor string, useFZF bool) (*pick
 
 // ---------------------------------------------------------------------------
 // Profile support
+//
+// Merge precedence (low → high):
+//   1. defaults in code (SetDefaults)
+//   2. [defaults] in TOML config
+//   3. [profiles.X] — applies via applyProfile
+//   4. CLI flags — highest priority
+//
+// Merge strategy per field:
+//   - Scalar fields (timeout, remote_path, etc.): profile overrides config
+//   - Paths: profile replaces config paths (not append)
+//   - Exclude: profile merged + deduplicated with config defaults
+//     (via mergeExcludes — union semantics)
+//   - RsyncOpts: profile overrides config rsync_options (not append)
 // ---------------------------------------------------------------------------
 
 func applyProfile(ac *appConfig, p config.Profile) {
@@ -1414,7 +1510,10 @@ func applyProfile(ac *appConfig, p config.Profile) {
 	if p.RsyncOpts != "" {
 		ac.rsyncOpts = p.RsyncOpts
 	}
-	// TODO: exclude from profile is handled at transfer level via config
+	// Apply profile-level exclude patterns
+	if len(p.Exclude) > 0 {
+		ac.exclude = p.Exclude
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1437,32 +1536,12 @@ func buildExcludePatterns(cfgExclude []string, respectGitignore bool, baseDir st
 	}
 
 	if respectGitignore {
-		for _, p := range readGitignoreLocal(baseDir) {
+		for _, p := range transfer.ReadGitignore(baseDir) {
 			add(p)
 		}
 	}
 
 	return list
-}
-
-func readGitignoreLocal(dir string) []string {
-	var patterns []string
-	data, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
-	if err != nil {
-		return nil
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
-			continue
-		}
-		line = strings.TrimSuffix(line, "/")
-		line = strings.TrimPrefix(line, "/")
-		if line != "" {
-			patterns = append(patterns, line)
-		}
-	}
-	return patterns
 }
 
 func isExcluded(path string, patterns []string) bool {
@@ -1505,10 +1584,12 @@ func isExcluded(path string, patterns []string) bool {
 func recordDeployHistory(op string, ac *appConfig, fileSet *picker.FileSet, results []transfer.TransferResult) {
 	histDir, err := config.HistoryDir()
 	if err != nil {
-		return // silently skip
+		fmt.Fprintf(os.Stderr, "  ⚠ History recording disabled: %v\n", err)
+		return
 	}
 	store, err := history.NewStore(histDir)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "  ⚠ History store failed: %v\n", err)
 		return
 	}
 
@@ -1557,18 +1638,80 @@ func recordDeployHistory(op string, ac *appConfig, fileSet *picker.FileSet, resu
 // ---------------------------------------------------------------------------
 
 func mergeDefaults(ac *appConfig, d *config.Defaults) {
-	if ac.timeout <= 0 { ac.timeout = d.Timeout }
-	if ac.concurrency <= 0 { ac.concurrency = d.Concurrency }
-	if !ac.dryRun && d.DryRun { ac.dryRun = true }
-	if !ac.noPreview && d.NoPreview { ac.noPreview = true }
-	if !ac.noGitignore && !d.IsRespectGitignore() { ac.noGitignore = true }
+	if ac.timeout <= 0 {
+		ac.timeout = d.Timeout
+	}
+	if ac.concurrency <= 0 {
+		ac.concurrency = d.Concurrency
+	}
+	if !ac.dryRun && d.DryRun {
+		ac.dryRun = true
+	}
+	if !ac.noPreview && d.NoPreview {
+		ac.noPreview = true
+	}
+	if !ac.noGitignore && !d.IsRespectGitignore() {
+		ac.noGitignore = true
+	}
+	// --force skips all confirmations and previews
+	if ac.force {
+		ac.noConfirm = true
+		ac.noPreview = true
+	}
+}
+
+// transferHasErrors returns true if any transfer result has status "error".
+func transferHasErrors(results []transfer.TransferResult) bool {
+	for _, r := range results {
+		if r.Status == "error" {
+			return true
+		}
+	}
+	return false
+}
+
+// countErrors returns the number of transfer results with status "error".
+func countErrors(results []transfer.TransferResult) int {
+	n := 0
+	for _, r := range results {
+		if r.Status == "error" {
+			n++
+		}
+	}
+	return n
 }
 
 func splitTags(tags string) []string {
-	if tags == "" { return nil }
+	if tags == "" {
+		return nil
+	}
 	parts := strings.Split(tags, ",")
-	for i := range parts { parts[i] = strings.TrimSpace(parts[i]) }
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
 	return parts
+}
+
+// mergeExcludes merges profile-level excludes with config defaults
+func mergeExcludes(defaults, profile []string) []string {
+	if len(profile) == 0 {
+		return defaults
+	}
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(defaults)+len(profile))
+	for _, e := range defaults {
+		if !seen[e] {
+			seen[e] = true
+			result = append(result, e)
+		}
+	}
+	for _, e := range profile {
+		if !seen[e] {
+			seen[e] = true
+			result = append(result, e)
+		}
+	}
+	return result
 }
 
 // ---------------------------------------------------------------------------
@@ -1594,7 +1737,7 @@ func pickServersFZF(servers []config.Server, serverFilter string, tagFilter []st
 			}
 		}
 		if len(tagFilter) > 0 {
-			if !hasAnyTag(s.Tags, tagFilter) {
+			if !transfer.HasAnyTag(s.Tags, tagFilter) {
 				continue
 			}
 		}
@@ -1610,7 +1753,9 @@ func pickServersFZF(servers []config.Server, serverFilter string, tagFilter []st
 	for i, s := range filtered {
 		tagStr := strings.Join(s.Tags, ",")
 		rp := s.RemotePath
-		if rp == "" { rp = "(default)" }
+		if rp == "" {
+			rp = "(default)"
+		}
 		if tagStr != "" {
 			lines[i] = fmt.Sprintf("%s  %s@%s:%d  [%s]  %s", s.Name, s.User, s.Host, s.Port, tagStr, rp)
 		} else {
@@ -1643,7 +1788,7 @@ func pickServersFZF(servers []config.Server, serverFilter string, tagFilter []st
 				}
 				// Fall through to editor mode
 			} else {
-				selected := parseFileListFZF(string(out))
+				selected := picker.ParseFileList(string(out))
 				if len(selected) == 0 {
 					return nil, fmt.Errorf("no servers selected")
 				}
@@ -1681,7 +1826,7 @@ func pickServersFZF(servers []config.Server, serverFilter string, tagFilter []st
 	os.WriteFile(tmpPath, []byte(content), 0644)
 	tmpFile.Close()
 
-	editor := findEditorSrv()
+	editor := picker.FindEditor()
 	editCmd := exec.Command(editor, tmpPath)
 	editCmd.Stdin = os.Stdin
 	editCmd.Stdout = os.Stdout
@@ -1690,7 +1835,7 @@ func pickServersFZF(servers []config.Server, serverFilter string, tagFilter []st
 		return nil, fmt.Errorf("editor: %w", err)
 	}
 	data, _ := os.ReadFile(tmpPath)
-	selected := parseEditorOutputSrv(string(data))
+	selected := picker.ParseEditorOutput(string(data))
 	if len(selected) == 0 {
 		return nil, fmt.Errorf("no servers selected")
 	}
@@ -1712,44 +1857,6 @@ func pickServersFZF(servers []config.Server, serverFilter string, tagFilter []st
 		return nil, fmt.Errorf("no servers selected")
 	}
 	return result, nil
-}
-
-// parseFileListFZF splits fzf multi-select output into lines.
-func parseFileListFZF(s string) []string {
-	lines := strings.Split(strings.TrimSpace(s), "\n")
-	var result []string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			result = append(result, line)
-		}
-	}
-	return result
-}
-
-// parseEditorOutputSrv parses the file back from editor, skipping comment lines.
-// (local copy to avoid circular deps with picker package)
-func parseEditorOutputSrv(content string) []string {
-	lines := strings.Split(content, "\n")
-	var selected []string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		selected = append(selected, line)
-	}
-	return selected
-}
-
-// findEditorSrv finds an available editor (local copy).
-func findEditorSrv() string {
-	if e := os.Getenv("VISUAL"); e != "" { return e }
-	if e := os.Getenv("EDITOR"); e != "" { return e }
-	for _, c := range []string{"vim", "nano", "hx", "micro"} {
-		if _, err := exec.LookPath(c); err == nil { return c }
-	}
-	return "vim"
 }
 
 func confirmPrompt(msg string) bool {
@@ -1794,7 +1901,7 @@ func runCheck(ac *appConfig) error {
 				}
 			}
 			if len(tagList) > 0 {
-				if !hasAnyTag(s.Tags, tagList) {
+				if !transfer.HasAnyTag(s.Tags, tagList) {
 					continue
 				}
 			}
@@ -1878,20 +1985,7 @@ func testSSHVersion(s config.Server) string {
 	return ""
 }
 
-func hasAnyTag(serverTags, filterTags []string) bool {
-	for _, ft := range filterTags {
-		for _, st := range serverTags {
-			if st == ft {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// ---------------------------------------------------------------------------
 // Results display
-
 func printResults(results []transfer.TransferResult) {
 	ok := 0
 	fail := 0
@@ -1933,16 +2027,18 @@ func printResults(results []transfer.TransferResult) {
 	}
 	fmt.Fprintf(os.Stderr, "\n")
 	if fail > 0 {
-		fmt.Fprintf(os.Stderr, "  %s %d OK · %s %d FAIL\n",
-			color.GreenString(""), ok, color.RedString(""), fail)
+		fmt.Fprintf(os.Stderr, "  %s%d OK · %s%d FAIL\n",
+			color.GreenString("\u2713 "), ok, color.RedString("\u2717 "), fail)
 	} else {
-		fmt.Fprintf(os.Stderr, "  %s %d OK\n", color.GreenString(""), ok)
+		fmt.Fprintf(os.Stderr, "  %s%d OK\n", color.GreenString("\u2713 "), ok)
 	}
 }
 
 func installSkill() error {
 	home, err := os.UserHomeDir()
-	if err != nil { return fmt.Errorf("home dir: %w", err) }
+	if err != nil {
+		return fmt.Errorf("home dir: %w", err)
+	}
 	skillDir := filepath.Join(home, ".hermes", "skills", "software-development", "deploi")
 	os.MkdirAll(skillDir, 0755)
 	skillPath := filepath.Join(skillDir, "SKILL.md")

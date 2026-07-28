@@ -3,8 +3,6 @@
 package picker
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -52,26 +50,26 @@ func (s SourceType) String() string {
 
 // PickConfig holds parameters for file selection.
 type PickConfig struct {
-	Source         SourceType
-	Paths          []string // explicit paths (for SourceManual / SourceAll)
-	GitDir         string   // git working directory (default: cwd)
-	Commit         string   // commit hash or ref (for SourceGitCommit)
-	Branch         string   // branch name (for SourceGitBranch)
-	PickCommit     bool     // interactive commit selection via fzf (for SourceGitCommit)
-	PickFiles      bool     // interactive file selection via fzf (for SourceGitDiff)
-	Editor         string   // editor binary
-	BaseDir        string   // base directory for relative paths
-	IncludeStaged  bool     // include staged files in git-diff (default: true)
-	IncludeUntracked bool   // include untracked files in git-diff (default: true)
+	Source           SourceType
+	Paths            []string // explicit paths (for SourceManual / SourceAll)
+	GitDir           string   // git working directory (default: cwd)
+	Commit           string   // commit hash or ref (for SourceGitCommit)
+	Branch           string   // branch name (for SourceGitBranch)
+	PickCommit       bool     // interactive commit selection via fzf (for SourceGitCommit)
+	PickFiles        bool     // interactive file selection via fzf (for SourceGitDiff)
+	Editor           string   // editor binary
+	BaseDir          string   // base directory for relative paths
+	IncludeStaged    bool     // include staged files in git-diff (default: true)
+	IncludeUntracked bool     // include untracked files in git-diff (default: true)
 }
 
 // FileSet holds the result of file selection.
 type FileSet struct {
-	Source  SourceType `json:"source"`
-	Files   []string   `json:"files"`   // selected file paths (relative or absolute)
-	AbsDir  string     `json:"abs_dir"` // base absolute directory
-	Count   int        `json:"count"`
-	Label   string     `json:"label"` // human-readable label
+	Source SourceType `json:"source"`
+	Files  []string   `json:"files"`   // selected file paths (relative or absolute)
+	AbsDir string     `json:"abs_dir"` // base absolute directory
+	Count  int        `json:"count"`
+	Label  string     `json:"label"` // human-readable label
 }
 
 // Pick selects files based on the configuration.
@@ -254,7 +252,7 @@ func pickGitCommit(gitDir, commit string, baseDir string) (*FileSet, error) {
 		return nil, fmt.Errorf("git diff-tree %s: %w", commit, err)
 	}
 
-	files := parseFileList(string(out))
+	files := ParseFileList(string(out))
 	if len(files) == 0 {
 		return nil, fmt.Errorf("no files found in commit %s", commit)
 	}
@@ -303,7 +301,7 @@ func pickGitBranch(gitDir, branch string, baseDir string) (*FileSet, error) {
 		return nil, fmt.Errorf("git diff %s: %w", rangeSpec, err)
 	}
 
-	files := parseFileList(string(out))
+	files := ParseFileList(string(out))
 	if len(files) == 0 {
 		return nil, fmt.Errorf("no file differences between %s and %s", currentBranch, branch)
 	}
@@ -337,7 +335,9 @@ func pickFZF(paths []string, gitDir, baseDir string) (*FileSet, error) {
 		// Try git status to show project files
 		if out, err := exec.Command("git", "-C", gitDir, "status", "--porcelain").Output(); err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
-				if len(line) < 4 { continue }
+				if len(line) < 4 {
+					continue
+				}
 				filename := strings.TrimSpace(line[3:])
 				if idx := strings.Index(filename, " -> "); idx >= 0 {
 					filename = strings.TrimSpace(filename[idx+4:])
@@ -412,7 +412,7 @@ func pickFZF(paths []string, gitDir, baseDir string) (*FileSet, error) {
 		return nil, fmt.Errorf("fzf: %w", err)
 	}
 
-	selected := parseFileList(string(out))
+	selected := ParseFileList(string(out))
 
 	// Resolve to absolute paths
 	absFiles := make([]string, len(selected))
@@ -436,7 +436,7 @@ func pickFZF(paths []string, gitDir, baseDir string) (*FileSet, error) {
 // pickEditor opens an editor with the file list and lets the user select.
 func pickEditor(paths []string, editor, baseDir string) (*FileSet, error) {
 	if editor == "" {
-		editor = findEditor()
+		editor = FindEditor()
 	}
 
 	candidates := paths
@@ -444,7 +444,9 @@ func pickEditor(paths []string, editor, baseDir string) (*FileSet, error) {
 		// git status --porcelain: "XY filename" — do NOT trim leading space
 		if out, err := exec.Command("git", "status", "--porcelain").Output(); err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
-				if len(line) < 4 { continue }
+				if len(line) < 4 {
+					continue
+				}
 				filename := strings.TrimSpace(line[3:])
 				if idx := strings.Index(filename, " -> "); idx >= 0 {
 					filename = strings.TrimSpace(filename[idx+4:])
@@ -495,7 +497,7 @@ func pickEditor(paths []string, editor, baseDir string) (*FileSet, error) {
 		return nil, fmt.Errorf("read temp file: %w", err)
 	}
 
-	selected := parseEditorOutput(string(data))
+	selected := ParseEditorOutput(string(data))
 	if len(selected) == 0 {
 		return nil, fmt.Errorf("no files selected")
 	}
@@ -586,7 +588,7 @@ func pickCommitFZF(gitDir, baseDir, editor string) (*FileSet, error) {
 		return nil, fmt.Errorf("git log: %w", err)
 	}
 
-	commits := parseFileList(string(out))
+	commits := ParseFileList(string(out))
 	if len(commits) == 0 {
 		return nil, fmt.Errorf("no commits found")
 	}
@@ -620,7 +622,7 @@ func pickCommitFZF(gitDir, baseDir, editor string) (*FileSet, error) {
 
 		e := editor
 		if e == "" {
-			e = findEditor()
+			e = FindEditor()
 		}
 		editCmd := exec.Command(e, tmpPath)
 		editCmd.Stdin = os.Stdin
@@ -630,7 +632,7 @@ func pickCommitFZF(gitDir, baseDir, editor string) (*FileSet, error) {
 			return nil, fmt.Errorf("editor: %w", err)
 		}
 		data, _ := os.ReadFile(tmpPath)
-		selected := parseEditorOutput(string(data))
+		selected := ParseEditorOutput(string(data))
 		if len(selected) == 0 {
 			return nil, fmt.Errorf("no commit selected")
 		}
@@ -653,7 +655,7 @@ func pickCommitFZF(gitDir, baseDir, editor string) (*FileSet, error) {
 		return nil, fmt.Errorf("git diff-tree %s: %w", hash, err)
 	}
 
-	files := parseFileList(string(out))
+	files := ParseFileList(string(out))
 	if len(files) == 0 {
 		return nil, fmt.Errorf("no files found in commit %s", hash)
 	}
@@ -672,7 +674,7 @@ func pickCommitFZF(gitDir, baseDir, editor string) (*FileSet, error) {
 			// On error (e.g. no selection with Enter), use all files
 			// proceed with full file list
 		} else {
-			selected := parseFileList(string(out))
+			selected := ParseFileList(string(out))
 			if len(selected) > 0 {
 				files = selected
 			}
@@ -702,8 +704,8 @@ func isGitRepo(dir string) bool {
 	return cmd.Run() == nil
 }
 
-// parseFileList splits a git output string into a file list.
-func parseFileList(s string) []string {
+// ParseFileList splits a git output string into a file list.
+func ParseFileList(s string) []string {
 	lines := strings.Split(strings.TrimSpace(s), "\n")
 	var files []string
 	for _, line := range lines {
@@ -715,8 +717,8 @@ func parseFileList(s string) []string {
 	return files
 }
 
-// parseEditorOutput parses the file back from editor, skipping comment lines.
-func parseEditorOutput(content string) []string {
+// ParseEditorOutput parses the file back from editor, skipping comment lines.
+func ParseEditorOutput(content string) []string {
 	lines := strings.Split(content, "\n")
 	var selected []string
 	for _, line := range lines {
@@ -727,32 +729,6 @@ func parseEditorOutput(content string) []string {
 		selected = append(selected, line)
 	}
 	return selected
-}
-
-// mergeFileLists merges two git output strings, deduplicating.
-func mergeFileLists(a, b string) []string {
-	all := make(map[string]struct{})
-	scanner := bufio.NewScanner(bytes.NewReader([]byte(a)))
-	scanner.Split(bufio.ScanLines)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line != "" {
-			all[line] = struct{}{}
-		}
-	}
-	scanner = bufio.NewScanner(bytes.NewReader([]byte(b)))
-	scanner.Split(bufio.ScanLines)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line != "" {
-			all[line] = struct{}{}
-		}
-	}
-	result := make([]string, 0, len(all))
-	for k := range all {
-		result = append(result, k)
-	}
-	return result
 }
 
 // uniqueStrings deduplicates a string slice.
@@ -768,8 +744,8 @@ func uniqueStrings(s []string) []string {
 	return result
 }
 
-// findEditor finds an available editor.
-func findEditor() string {
+// FindEditor finds an available editor.
+func FindEditor() string {
 	if e := os.Getenv("VISUAL"); e != "" {
 		return e
 	}
@@ -782,28 +758,4 @@ func findEditor() string {
 		}
 	}
 	return "vim"
-}
-
-// ScanGitLog provides a commit selector UI.
-func ScanGitLog(gitDir string, count int) ([]string, error) {
-	if gitDir == "" {
-		var err error
-		gitDir, err = os.Getwd()
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	if count <= 0 {
-		count = 20
-	}
-
-	cmd := exec.Command("git", "-C", gitDir, "log", "--oneline", fmt.Sprintf("-%d", count))
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("git log: %w", err)
-	}
-
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	return lines, nil
 }
