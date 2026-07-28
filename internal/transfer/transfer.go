@@ -645,6 +645,12 @@ func parseRsyncOutput(output string) rsyncParsed {
 			continue
 		}
 
+		// Skip directory entries (trailing /) — rsync -avzR outputs directories
+		// for --relative path recreation but they aren't actual files.
+		if strings.HasSuffix(line, "/") {
+			p.Files = append(p.Files, line)
+			continue
+		}
 		p.Files = append(p.Files, line)
 		p.FileCount++
 	}
