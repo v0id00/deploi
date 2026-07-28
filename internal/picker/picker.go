@@ -731,19 +731,6 @@ func ParseEditorOutput(content string) []string {
 	return selected
 }
 
-// uniqueStrings deduplicates a string slice.
-func uniqueStrings(s []string) []string {
-	seen := make(map[string]struct{})
-	var result []string
-	for _, v := range s {
-		if _, ok := seen[v]; !ok {
-			seen[v] = struct{}{}
-			result = append(result, v)
-		}
-	}
-	return result
-}
-
 // FindEditor finds an available editor.
 func FindEditor() string {
 	if e := os.Getenv("VISUAL"); e != "" {

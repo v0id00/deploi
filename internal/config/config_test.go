@@ -258,6 +258,20 @@ func TestExpandPath(t *testing.T) {
 	}
 }
 
+func TestHistoryDir(t *testing.T) {
+	dir, err := HistoryDir()
+	if err != nil {
+		t.Fatalf("HistoryDir() error: %v", err)
+	}
+	if dir == "" {
+		t.Fatal("HistoryDir() returned empty path")
+	}
+	// Directory should exist
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("HistoryDir() directory not created: %v", err)
+	}
+}
+
 func TestDefaultExampleNotEmpty(t *testing.T) {
 	content := DefaultExample()
 	if content == "" {

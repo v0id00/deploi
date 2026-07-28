@@ -352,6 +352,73 @@ func TestFilterServers(t *testing.T) {
 	}
 }
 
+// --- edge case tests ---
+
+func TestRunNoServers(t *testing.T) {
+	results := Run(nil, RunConfig{})
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Status != "error" {
+		t.Errorf("Status = %q, want error", results[0].Status)
+	}
+}
+
+func TestRunRollbackNoBackups(t *testing.T) {
+	results := RunRollback(nil, RollbackOptions{})
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Status != "error" {
+		t.Errorf("Status = %q, want error", results[0].Status)
+	}
+}
+
+func TestRunCommandsNoServers(t *testing.T) {
+	results := RunCommands(nil, []string{"uptime"}, RunConfig{})
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Status != "error" {
+		t.Errorf("Status = %q, want error", results[0].Status)
+	}
+}
+
+func TestGitDiffSummaryEmptyFiles(t *testing.T) {
+	summary := GitDiffSummary(nil, "")
+	if summary != "(no files)" {
+		t.Errorf("GitDiffSummary() = %q, want \"(no files)\"", summary)
+	}
+}
+
+func TestEnrichRsyncErrorExitCodes(t *testing.T) {
+	tests := []struct {
+		name     string
+		code     int
+		output   string
+		contains string
+	}{
+		{"exit 10", 10, "", "socket I/O"},
+		{"exit 11", 11, "", "file I/O"},
+		{"exit 12", 12, "", "protocol data"},
+		{"exit 23", 23, "", "partial transfer"},
+		{"exit 30", 30, "", "timeout"},
+		{"exit 23 permission", 23, "Permission denied", "write permissions"},
+		{"exit 11 mkdir", 11, "mkdir", "Remote path"},
+		{"exit 1 host key", 1, "Host key verification failed", "host key"},
+		{"exit 1 name unknown", 1, "Name or service not known", "resolved"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := &mockExitError{exitCode: tt.code}
+			msg := enrichRsyncError(err, []byte(tt.output), RunConfig{}, "")
+			if !stringsContains(msg, tt.contains) {
+				t.Errorf("enrichRsyncError() = %q, want to contain %q", msg, tt.contains)
+			}
+		})
+	}
+}
+
 // --- helpers ---
 
 type mockExitError struct {

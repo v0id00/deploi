@@ -241,7 +241,69 @@ func TestGuessDefaultPath(t *testing.T) {
 	}
 }
 
-// --- helpers ---
+func TestApplyProfile(t *testing.T) {
+	ac := &appConfig{}
+	p := config.Profile{
+		Method:     "git-diff",
+		Paths:      []string{"src/", "config/"},
+		RemotePath: "/var/www",
+		Commit:     "abc1234",
+		Branch:     "main",
+		PickCommit: true,
+		RsyncOpts:  "-avz --delete",
+		Exclude:    []string{"*.log"},
+	}
+	applyProfile(ac, p)
+
+	if ac.selectMode != "git-diff" {
+		t.Errorf("selectMode = %q, want git-diff", ac.selectMode)
+	}
+	if len(ac.paths) != 2 || ac.paths[0] != "src/" {
+		t.Errorf("paths = %v, want [src/ config/]", ac.paths)
+	}
+	if ac.remoteDir != "/var/www" {
+		t.Errorf("remoteDir = %q, want /var/www", ac.remoteDir)
+	}
+	if ac.commit != "abc1234" {
+		t.Errorf("commit = %q, want abc1234", ac.commit)
+	}
+	if ac.branch != "main" {
+		t.Errorf("branch = %q, want main", ac.branch)
+	}
+	if !ac.pick {
+		t.Error("pick should be true")
+	}
+	if ac.rsyncOpts != "-avz --delete" {
+		t.Errorf("rsyncOpts = %q, want -avz --delete", ac.rsyncOpts)
+	}
+	if len(ac.exclude) != 1 || ac.exclude[0] != "*.log" {
+		t.Errorf("exclude = %v, want [*.log]", ac.exclude)
+	}
+}
+
+func TestApplyProfilePartial(t *testing.T) {
+	ac := &appConfig{selectMode: "all", remoteDir: "/original"}
+	p := config.Profile{Method: "git-diff"} // only set method
+	applyProfile(ac, p)
+
+	if ac.selectMode != "git-diff" {
+		t.Errorf("selectMode = %q, want git-diff", ac.selectMode)
+	}
+	// Fields not in profile should keep original values
+	if ac.remoteDir != "/original" {
+		t.Errorf("remoteDir = %q, want /original (preserved)", ac.remoteDir)
+	}
+	if ac.pick {
+		t.Error("pick should remain false")
+	}
+}
+
+func TestIsRealTerminal(t *testing.T) {
+	// In test environment, stdin is piped, not a terminal
+	if isRealTerminal() {
+		t.Log("isRealTerminal() = true (running in interactive terminal)")
+	}
+}
 
 type mockConnErr struct {
 	msg string
