@@ -589,22 +589,33 @@ func runPushPull(ac *appConfig, op transfer.Operation) error {
 		servers = selected
 	}
 
+	// ── Section: File Selection ──
+	if !ac.quiet {
+		fmt.Fprintf(os.Stderr, "\n%s\n",
+			color.New(color.FgCyan, color.Bold).Sprintf("═══ File Selection ═══"))
+		fmt.Fprintf(os.Stderr, "  %s: %s  ·  %s\n",
+			color.CyanString("Mode"), color.GreenString(fileSet.Label), color.YellowString(fmt.Sprintf("%d files", fileSet.Count)))
+	}
+
 	// Confirm when targeting ALL servers
 	if !ac.noConfirm && !ac.dryRun && len(servers) == len(cfg.Servers) {
 		if cfg.Defaults.ConfirmWithoutFilter {
-			if !confirmPrompt(fmt.Sprintf("Transfer %d files to ALL %d servers?", fileSet.Count, len(servers))) {
+			if !confirmPrompt(fmt.Sprintf("Transfer to ALL %d servers?", len(servers))) {
 				fmt.Fprintln(os.Stderr, "  Cancelled.")
 				return nil
 			}
 		}
 	}
 
-	// Preview: show diff summary and ask confirmation (unless disabled)
+	// ── Section: Preview ──
 	if !ac.noPreview && !ac.dryRun && op == transfer.OpPush {
 		gitDir := cwd()
 		summary := transfer.GitDiffSummary(fileSet.Files, gitDir)
-		fmt.Fprintf(os.Stderr, "  ─── Diff Preview ───\n%s\n", summary)
-		if !confirmPrompt(fmt.Sprintf("Transfer %d files to %d server(s)?", fileSet.Count, len(servers))) {
+		if !ac.quiet {
+			fmt.Fprintf(os.Stderr, "\n%s\n", color.New(color.FgCyan, color.Bold).Sprintf("═══ Changes ═══"))
+		}
+		fmt.Fprintf(os.Stderr, "%s\n", summary)
+		if !confirmPrompt(fmt.Sprintf("Push %d files to %d server(s)?", fileSet.Count, len(servers))) {
 			fmt.Fprintln(os.Stderr, "  Cancelled.")
 			return nil
 		}
@@ -637,18 +648,20 @@ func runPushPull(ac *appConfig, op transfer.Operation) error {
 	}
 
 	if !ac.quiet {
+		fmt.Fprintf(os.Stderr, "\n%s\n",
+			color.New(color.FgCyan, color.Bold).Sprintf("═══ Deploy ═══"))
 		opLabel := op.String()
 		serverLabel := tc.ServerRegex
 		if serverLabel == "" && len(tc.Tags) > 0 {
 			serverLabel = strings.Join(tc.Tags, ",")
 		}
 		if serverLabel == "" {
-			serverLabel = "all servers"
+			serverLabel = fmt.Sprintf("%d servers", len(servers))
 		}
-		fmt.Fprintf(os.Stderr, "  deploi %s  ·  %s  ·  %d files  →  %s\n",
-			opLabel, fileSet.Label, fileSet.Count, serverLabel)
+		fmt.Fprintf(os.Stderr, "  %s %d files  →  %s\n",
+			color.MagentaString(opLabel), fileSet.Count, color.CyanString(serverLabel))
 		if tc.DryRun {
-			fmt.Fprintf(os.Stderr, "  ⚠ Dry-run mode — no files will be transferred\n")
+			fmt.Fprintf(os.Stderr, "  %s\n", color.YellowString("⚠ Dry-run mode — no files will be transferred"))
 		}
 	}
 
@@ -1883,16 +1896,14 @@ func printResults(results []transfer.TransferResult) {
 			if r.Speed != "" {
 				extra = fmt.Sprintf("  ⚡%s", r.Speed)
 			}
+			fileInfo := ""
 			if r.Files > 0 {
-				fmt.Fprintf(os.Stdout, "  %s %-20s  %d files%s%s  %s\n",
-					color.GreenString("✓"), r.Server, r.Files, extra, hooks, r.Elapsed)
-			} else {
-				fmt.Fprintf(os.Stdout, "  %s %-20s%s%s  %s\n",
-					color.GreenString("✓"), r.Server, extra, hooks, r.Elapsed)
+				fileInfo = fmt.Sprintf("%d files", r.Files)
 			}
+			fmt.Fprintf(os.Stdout, "  %s %-20s  %s%s%s  %s\n",
+				color.GreenString("✓"), r.Server, fileInfo, extra, hooks, r.Elapsed)
 		} else {
 			fail++
-			// Split error into message and suggestion
 			errStr := r.Error
 			parts := strings.SplitN(errStr, "\n", 2)
 			mainMsg := parts[0]
@@ -1910,10 +1921,12 @@ func printResults(results []transfer.TransferResult) {
 			}
 		}
 	}
+	fmt.Fprintf(os.Stderr, "\n")
 	if fail > 0 {
-		fmt.Fprintf(os.Stderr, "\n  %d OK · %d FAIL\n", ok, fail)
+		fmt.Fprintf(os.Stderr, "  %s %d OK · %s %d FAIL\n",
+			color.GreenString(""), ok, color.RedString(""), fail)
 	} else {
-		fmt.Fprintf(os.Stderr, "\n  %d OK\n", ok)
+		fmt.Fprintf(os.Stderr, "  %s %d OK\n", color.GreenString(""), ok)
 	}
 }
 
