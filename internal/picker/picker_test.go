@@ -315,6 +315,7 @@ func TestPickGitBranch_Diff(t *testing.T) {
 	runGit(t, dir, "init")
 	runGit(t, dir, "config", "user.email", "test@test.com")
 	runGit(t, dir, "config", "user.name", "Test")
+	runGit(t, dir, "branch", "-m", "main")
 	runGit(t, dir, "commit", "--allow-empty", "-m", "initial")
 
 	// Create and switch to feature branch
