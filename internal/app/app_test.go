@@ -334,8 +334,8 @@ func TestApplyProfile(t *testing.T) {
 	}
 	applyProfile(ac, p)
 
-	if ac.selectMode != "git-diff" {
-		t.Errorf("selectMode = %q, want git-diff", ac.selectMode)
+	if ac.method != "git-diff" {
+		t.Errorf("method = %q, want git-diff", ac.method)
 	}
 	if len(ac.paths) != 2 || ac.paths[0] != "src/" {
 		t.Errorf("paths = %v, want [src/ config/]", ac.paths)
@@ -361,12 +361,12 @@ func TestApplyProfile(t *testing.T) {
 }
 
 func TestApplyProfilePartial(t *testing.T) {
-	ac := &appConfig{selectMode: "all", remoteDir: "/original"}
+	ac := &appConfig{method: "all", remoteDir: "/original"}
 	p := config.Profile{Method: "git-diff"} // only set method
 	applyProfile(ac, p)
 
-	if ac.selectMode != "git-diff" {
-		t.Errorf("selectMode = %q, want git-diff", ac.selectMode)
+	if ac.method != "git-diff" {
+		t.Errorf("method = %q, want git-diff", ac.method)
 	}
 	// Fields not in profile should keep original values
 	if ac.remoteDir != "/original" {

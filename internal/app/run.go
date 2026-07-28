@@ -54,8 +54,7 @@ type appConfig struct {
 	version     bool
 
 	// File selection
-	selectMode string // --select: manual, fzf, editor, all
-	filterMode string // --filter: git-diff, git-commit, git-branch, path
+	method    string // --method: git-diff, git-commit, git-branch, fzf, editor, all, path
 	paths      []string
 	commit     string
 	branch     string
@@ -68,7 +67,6 @@ type appConfig struct {
 
 	// Transfer
 	rsyncOpts string
-	method    string
 
 	// Profile excludes (merged with defaults during push)
 	exclude []string
@@ -98,21 +96,19 @@ Features:
   • Concurrent: goroutine-based transfers to multiple servers
 
 File selection:
-  --select <mode>   Selection mode: manual, fzf, editor, all
-  --filter <type>   Filter: git-diff, git-commit, git-branch, path
+  -m, --method <method>   Method: git-diff, git-commit, git-branch, fzf, editor, all, path (default: git-diff)
 
-If neither is specified, defaults to --filter git-diff (changed files).
+Defaults to git-diff (changed files) when -m is not given.
 Use -S to pick target servers interactively via fzf.
 
 Examples:
   deploi push -s prod                         # changed files (default)
-  deploi push -s prod --filter git-diff        # same as above
-  deploi push -s prod --filter git-commit      # pick a commit interactively
-  deploi push -s prod --filter git-branch --branch main  # diff with branch
-  deploi push -s prod --select fzf             # browse and pick files
-  deploi push -s prod --select all             # all files in current dir
+  deploi push -s prod -m git-commit           # pick a commit interactively
+  deploi push -s prod -m fzf                  # browse and pick files
+  deploi push -s prod -m all                  # all files in current dir
+  deploi push config/app.php                  # specific file
   deploi push -s staging --profile assets
-  deploi pull -s staging --select all remote/path/
+  deploi pull -s staging -m all remote/path/
   deploi watch -s staging ./
   deploi history
   deploi rollback 3`,
@@ -174,20 +170,19 @@ Shows a diff preview and asks for confirmation before transferring.
 Use --no-preview to skip this, or set no_preview=true in config.
 
 File selection:
-  --select <mode>   Selection mode: manual, fzf, editor, all
-  --filter <type>   Filter: git-diff, git-commit, git-branch, path
-  (path args)       Explicit file paths (manual)
+  -m, --method <method>   Method: git-diff, git-commit, git-branch, fzf, editor, all, path (default: git-diff)
+  (path args)             Explicit file paths (when using -m path)
 
-Defaults to --filter git-diff (changed files) when neither is given.
+Defaults to git-diff (changed files) when -m is not given.
 Use --no-staged to exclude staged files from git-diff selection.
 
 Examples:
   deploi push -s prod                          # changed files (default)
-  deploi push -s prod --filter git-diff        # same as above
-  deploi push -s prod --filter git-commit      # pick a commit interactively
-  deploi push -s prod --select fzf             # browse and pick files
-  deploi push -s prod --select all             # all files in current dir
-  deploi push -S -s prod --filter git-diff     # push changed files to prod`,
+  deploi push -s prod -m git-commit            # pick a commit interactively
+  deploi push -s prod -m fzf                   # browse and pick files
+  deploi push -s prod -m all                   # all files in current dir
+  deploi push config/app.php                   # specific file
+  deploi push -S -s prod                       # pick servers then push changes`,
 		Args: cobra.MaximumNArgs(100),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ac.paths = args
@@ -214,7 +209,7 @@ func newPullCmd() *cobra.Command {
 		Long: `Download files from remote servers to local machine.
 
 Examples:
-  deploi pull -s staging --select all --filter path remote/path/
+  deploi pull -s staging -m all remote/path/
   deploi pull -s prod var/log/app.log`,
 		Args: cobra.MaximumNArgs(100),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -243,8 +238,8 @@ func newSyncCmd() *cobra.Command {
 Shows what would change before transferring.
 
 Examples:
-  deploi sync -s prod --filter git-diff
-  deploi sync -s prod --select fzf`,
+  deploi sync -s prod -m git-diff
+  deploi sync -s prod -m fzf`,
 		Args: cobra.MaximumNArgs(100),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ac.paths = args
@@ -489,11 +484,9 @@ func newSkillCmd() *cobra.Command {
 // ---------------------------------------------------------------------------
 
 func addFileSelectionFlags(flags *pflag.FlagSet, ac *appConfig) {
-	flags.StringVar(&ac.selectMode, "select", "",
-		"Selection mode: manual, fzf, editor, all")
-	flags.StringVar(&ac.filterMode, "filter", "",
-		"Filter: git-diff, git-commit, git-branch, path")
-	flags.StringVar(&ac.commit, "commit", "", "Git commit hash (for git-commit filter)")
+	flags.StringVarP(&ac.method, "method", "m", "git-diff",
+		"File selection method: git-diff, git-commit, git-branch, fzf, editor, all, path")
+	flags.StringVar(&ac.commit, "commit", "", "Git commit hash (for git-commit method)")
 	flags.StringVar(&ac.branch, "branch", "", "Git branch name (for git-branch filter)")
 	flags.BoolVarP(&ac.pick, "pick", "P", false, "Pick commit interactively via fzf")
 	flags.StringVar(&ac.remoteDir, "remote-dir", "", "Remote directory override")
@@ -1286,154 +1279,30 @@ func guessDefaultPath(servers []config.Server) string {
 // ---------------------------------------------------------------------------
 
 func resolveFiles(ac *appConfig, editor string) (*picker.FileSet, error) {
-	// Determine select mode and filter
-	sel := ac.selectMode
-	fil := ac.filterMode
-
-	// Default: if nothing specified, use git-diff
-	if sel == "" && fil == "" {
-		fil = "git-diff"
-	}
-
-	// Default filter for each select mode
-	if fil == "" {
-		switch sel {
-		case "fzf", "editor":
-			fil = "path"
-		case "all":
-			fil = "path"
-		case "manual":
-			fil = "path"
-		default:
-			fil = "path"
-		}
-	}
-
-	// Default select for each filter
-	if sel == "" {
-		switch fil {
-		case "git-diff", "git-commit", "git-branch":
-			sel = "manual"
-		default:
-			sel = "manual"
-		}
-	}
-
-	// Map to legacy source type + options
-	switch sel {
-	case "manual":
-		return resolveFilter(fil, ac, editor, false)
-	case "fzf":
-		return resolveFilter(fil, ac, editor, true)
-	case "editor":
-		if fil == "path" {
-			return picker.Pick(picker.PickConfig{Source: picker.SourceEditor, Paths: ac.paths, Editor: editor})
-		}
-		// For git filters with editor, resolve files first then show in editor
-		fs, err := resolveFilter(fil, ac, editor, false)
-		if err != nil {
-			return nil, err
-		}
-		// Show the resolved files in the editor for interactive selection
-		relFiles := make([]string, len(fs.Files))
-		for i, f := range fs.Files {
-			rel, _ := filepath.Rel(cwd(), f)
-			relFiles[i] = rel
-		}
-		return picker.Pick(picker.PickConfig{Source: picker.SourceEditor, Paths: relFiles, Editor: editor})
-	case "all":
-		targets := ac.paths
-		if len(targets) == 0 {
-			targets = []string{"."}
-		}
-		return picker.Pick(picker.PickConfig{Source: picker.SourceAll, Paths: targets, BaseDir: cwd()})
-	}
-
-	return nil, fmt.Errorf("unknown select mode: %s", sel)
-}
-
-// resolveFilter maps a filter + optional fzf to the right picker call.
-func resolveFilter(fil string, ac *appConfig, editor string, useFZF bool) (*picker.FileSet, error) {
 	baseDir := cwd()
-	includeStaged := !ac.noStaged
+	method := ac.method
+	if method == "" {
+		method = "git-diff"
+	}
 
-	switch fil {
+	switch method {
 	case "git-diff":
-		if useFZF {
-			// First resolve git-diff files respecting --no-staged, then show in fzf
-			fs, err := picker.Pick(picker.PickConfig{
-				Source:           picker.SourceGitDiff,
-				GitDir:           baseDir,
-				IncludeStaged:    includeStaged,
-				IncludeUntracked: true,
-			})
-			if err != nil {
-				if !includeStaged {
-					return nil, err
-				}
-				// No git changes and --no-staged not set — show all files via fzf
-				return picker.Pick(picker.PickConfig{
-					Source: picker.SourceFZF,
-					GitDir: baseDir,
-					Editor: editor,
-				})
-			}
-			relFiles := make([]string, len(fs.Files))
-			for i, f := range fs.Files {
-				rel, _ := filepath.Rel(baseDir, f)
-				relFiles[i] = rel
-			}
-			return picker.Pick(picker.PickConfig{
-				Source: picker.SourceFZF,
-				Paths:  relFiles,
-				GitDir: baseDir,
-				Editor: editor,
-			})
-		}
 		return picker.Pick(picker.PickConfig{
 			Source:           picker.SourceGitDiff,
 			GitDir:           baseDir,
-			IncludeStaged:    includeStaged,
+			IncludeStaged:    !ac.noStaged,
 			IncludeUntracked: true,
 		})
 
 	case "git-commit":
-		// Default to interactive commit pick when no commit hash specified
-		if ac.commit == "" && !useFZF && !ac.pick {
-			ac.pick = true
-		}
-		if useFZF || ac.pick {
-			if ac.commit != "" {
-				// First resolve files from the commit, then show in fzf
-				fs, err := picker.Pick(picker.PickConfig{
-					Source: picker.SourceGitCommit,
-					GitDir: baseDir,
-					Commit: ac.commit,
-				})
-				if err != nil {
-					return nil, err
-				}
-				relFiles := make([]string, len(fs.Files))
-				for i, f := range fs.Files {
-					rel, _ := filepath.Rel(baseDir, f)
-					relFiles[i] = rel
-				}
-				return picker.Pick(picker.PickConfig{
-					Source: picker.SourceFZF,
-					Paths:  relFiles,
-					GitDir: baseDir,
-					Editor: editor,
-				})
-			}
+		// Interactive commit picker when no hash given
+		if ac.commit == "" || ac.pick {
 			return picker.Pick(picker.PickConfig{
-				Source:     picker.SourceFZFCommit,
-				GitDir:     baseDir,
-				PickCommit: true,
-				Editor:     editor,
+				Source:      picker.SourceFZFCommit,
+				GitDir:      baseDir,
+				PickCommit:  true,
+				Editor:      editor,
 			})
-		}
-		if ac.commit == "" {
-			return nil, fmt.Errorf("--commit is required with --filter git-commit")
 		}
 		return picker.Pick(picker.PickConfig{
 			Source: picker.SourceGitCommit,
@@ -1443,15 +1312,7 @@ func resolveFilter(fil string, ac *appConfig, editor string, useFZF bool) (*pick
 
 	case "git-branch":
 		if ac.branch == "" {
-			return nil, fmt.Errorf("--branch is required with --filter git-branch")
-		}
-		if useFZF {
-			return picker.Pick(picker.PickConfig{
-				Source: picker.SourceFZF,
-				GitDir: baseDir,
-				Branch: ac.branch,
-				Editor: editor,
-			})
+			return nil, fmt.Errorf("--branch is required with -m git-branch")
 		}
 		return picker.Pick(picker.PickConfig{
 			Source: picker.SourceGitBranch,
@@ -1459,17 +1320,35 @@ func resolveFilter(fil string, ac *appConfig, editor string, useFZF bool) (*pick
 			Branch: ac.branch,
 		})
 
-	case "path":
-		if useFZF {
-			return picker.Pick(picker.PickConfig{
-				Source: picker.SourceFZF,
-				Paths:  ac.paths,
-				GitDir: baseDir,
-				Editor: editor,
-			})
+	case "fzf":
+		return picker.Pick(picker.PickConfig{
+			Source: picker.SourceFZF,
+			Paths:  ac.paths,
+			GitDir: baseDir,
+			Editor: editor,
+		})
+
+	case "editor":
+		return picker.Pick(picker.PickConfig{
+			Source: picker.SourceEditor,
+			Paths:  ac.paths,
+			Editor: editor,
+		})
+
+	case "all":
+		targets := ac.paths
+		if len(targets) == 0 {
+			targets = []string{"."}
 		}
+		return picker.Pick(picker.PickConfig{
+			Source:  picker.SourceAll,
+			Paths:   targets,
+			BaseDir: baseDir,
+		})
+
+	case "path":
 		if len(ac.paths) == 0 {
-			return nil, fmt.Errorf("file paths required. Usage: deploi push <file1> <file2> ... or use --filter git-diff to select changed files")
+			return nil, fmt.Errorf("file paths required. Usage: deploi push <file1> <file2> ...")
 		}
 		return picker.Pick(picker.PickConfig{
 			Source:  picker.SourceManual,
@@ -1478,7 +1357,7 @@ func resolveFilter(fil string, ac *appConfig, editor string, useFZF bool) (*pick
 		})
 
 	default:
-		return nil, fmt.Errorf("unknown filter: %s (use: git-diff, git-commit, git-branch, path, fzf, editor, all)", fil)
+		return nil, fmt.Errorf("unknown method: %s (use: git-diff, git-commit, git-branch, fzf, editor, all, path)", method)
 	}
 }
 
@@ -1501,7 +1380,7 @@ func resolveFilter(fil string, ac *appConfig, editor string, useFZF bool) (*pick
 
 func applyProfile(ac *appConfig, p config.Profile) {
 	if p.Method != "" {
-		ac.selectMode = p.Method
+		ac.method = p.Method
 	}
 	if len(p.Paths) > 0 {
 		ac.paths = p.Paths
@@ -1620,7 +1499,7 @@ func recordDeployHistory(op string, ac *appConfig, fileSet *picker.FileSet, resu
 
 	entry := history.Entry{
 		Operation:  op,
-		Method:     ac.selectMode + "+" + ac.filterMode,
+		Method:     ac.method,
 		Servers:    servers,
 		Files:      fileSet.Count,
 		FileList:   fileSet.Files,

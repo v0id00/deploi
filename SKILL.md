@@ -86,11 +86,11 @@ Webticari servers (8 adet) `~/.config/deploi/config.toml` içinde tanımlı.
 
 ```bash
 # File operations
-deploi push -s prod --filter git-diff              # changed files (relative paths)
-deploi push -S -t prod --filter git-diff            # pick servers via fzf
-deploi push -s staging --profile assets             # named profile
-deploi pull -s staging --select all --filter path remote/path/
-deploi sync -s prod --filter git-diff
+deploi push -s prod                           # changed files (default)
+deploi push -S -t prod                         # pick servers via fzf
+deploi push -s staging --profile assets        # named profile
+deploi pull -s staging -m all remote/path/
+deploi sync -s prod
 
 # Remote commands
 deploi run -s prod "systemctl reload nginx"
@@ -115,17 +115,17 @@ deploi config generate -o -
 
 ## File Selection Methods
 
-Two parameters:
-- `--select <mode>` — how to pick: `manual`, `fzf`, `editor`, `all`
-- `--filter <type>` — what to show: `git-diff`, `git-commit`, `git-branch`, `path`
+One parameter: `-m`/`--method <method>`
 
-| `--select` + `--filter` | Example |
-|-------------------------|---------|
-| `select fzf + filter git-diff` | `--select fzf --filter git-diff` |
-| `select fzf + filter path` | `--select fzf --filter path .` |
-| `select manual + filter git-diff` | `--filter git-diff` |
-| `select fzf + filter git-commit` | `--select fzf --filter git-commit` |
-| `select all + filter path` | `--select all --filter path ./dir/` |
+| Method | Description | Example |
+|--------|-------------|---------|
+| `git-diff` (default) | Changed files in working tree | `deploi push` |
+| `git-commit` | Files in a commit (interactive) | `deploi push -m git-commit` |
+| `git-branch` | Files changed between branches | `deploi push -m git-branch --branch NAME` |
+| `fzf` | Interactive file browser | `deploi push -m fzf` |
+| `editor` | Editor-based selection | `deploi push -m editor` |
+| `all` | All files in current directory | `deploi push -m all` |
+| `path` | Explicit file paths | `deploi push config/app.php` |
 
 ## Key Flags
 
@@ -134,8 +134,7 @@ Two parameters:
 | `-s, --server` | Glob filter for servers |
 | `-t, --tags` | Tag filter (OR) |
 | `-S, --pick-server` | Pick servers interactively via fzf |
-| `--select` | Selection mode: manual, fzf, editor, all |
-| `--filter` | Filter: git-diff, git-commit, git-branch, path |
+| `-m, --method` | Selection: git-diff (default), git-commit, git-branch, fzf, editor, all, path |
 | `-P, --pick` | Interactive commit pick |
 | `--profile` | Named deploy profile |
 | `--dry-run` | Preview only |

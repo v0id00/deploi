@@ -6,7 +6,7 @@ Like [propq](https://github.com/v0id00/propq) (multi-server SQL executor) but fo
 
 ## Features
 
-- **9 file selection methods**: manual, git-diff, git-commit (with `-P` for interactive pick), git-branch, fzf, fzf-commit, editor, all
+- **7 file selection methods**: git-diff, git-commit, git-branch, fzf, editor, all, path
 - **Interactive server picker**: select target servers via fzf with `-S`/`--pick-server`
 - **Pre/Post hooks**: run SSH commands before/after deploy on each server
 - **Diff preview**: shows changes and asks for confirmation before transferring (default)
@@ -30,28 +30,28 @@ deploi config generate
 deploi servers
 
 # Push changed files (git-diff) to production servers
-deploi push -s prod --filter git-diff
+deploi push -s prod
 
 # Push specific files
 deploi push -s prod config/app.php
 
 # Push files from a commit (interactive commit pick)
-deploi push -s prod --select fzf --filter git-commit -P
+deploi push -s prod -m git-commit
 
 # Push with fzf interactive file selection
-deploi push -s prod --select fzf
+deploi push -s prod -m fzf
 
 # Push using a profile
 deploi push -s staging --profile assets
 
 # Pick servers interactively via fzf
-deploi push -S -t prod --filter git-diff
+deploi push -S -t prod
 
 # Pull files from a server
-deploi pull -s staging --select all remote/path/
+deploi pull -s staging -m all remote/path/
 
 # Sync (dry-run) to see what would change
-deploi sync -s prod --filter git-diff
+deploi sync -s prod
 
 # Run SSH commands
 deploi run -s prod "systemctl reload nginx"
@@ -123,23 +123,17 @@ See `config.toml.example` for a full reference.
 
 ## File Selection
 
-Two independent parameters control file selection:
+Use `-m`/`--method` to choose how files are selected:
 
-| Parameter | Role | Values |
-|-----------|------|--------|
-| `--select` | **How** to pick files | `manual`, `fzf`, `editor`, `all` |
-| `--filter` | **What** files to show | `git-diff`, `git-commit`, `git-branch`, `path` |
-
-| Select + Filter | Command | Description |
-|-----------------|---------|-------------|
-| `select fzf + filter git-diff` | `deploi push --select fzf --filter git-diff` | Pick changed files via fzf |
-| `select fzf + filter path` | `deploi push --select fzf --filter path .` | Pick all files via fzf (from current dir) |
-| `select fzf + filter git-commit` | `deploi push --select fzf --filter git-commit` | Pick commit then files via fzf |
-| `select manual + filter git-diff` | `deploi push --filter git-diff` | Auto-select changed files |
-| `select manual + filter git-commit` | `deploi push --filter git-commit --commit HASH` | Files in a commit |
-| `select manual + filter git-branch` | `deploi push --filter git-branch --branch NAME` | Branch diff |
-| `select editor + filter path` | `deploi push --select editor` | Editor-based selection |
-| `select all + filter path` | `deploi push --select all --filter path ./dir/` | All files in a directory |
+| Method | Description | Example |
+|--------|-------------|---------|
+| `git-diff` (default) | Changed files in working tree | `deploi push` |
+| `git-commit` | Files in a commit (interactive pick) | `deploi push -m git-commit` |
+| `git-branch` | Files changed between branches | `deploi push -m git-branch --branch main` |
+| `fzf` | Interactive file browser | `deploi push -m fzf` |
+| `editor` | Editor-based selection | `deploi push -m editor` |
+| `all` | All files in current directory | `deploi push -m all` |
+| `path` | Explicit file paths | `deploi push config/app.php` |
 
 ## Commands
 
@@ -166,8 +160,7 @@ Two independent parameters control file selection:
 | `-t, --tags` | Filter by tags (comma-separated, OR) |
 | `-S, --pick-server` | Pick servers interactively via fzf (also works with -t) |
 | `-c, --config` | Config file path |
-| `--select` | Selection mode (how): manual, fzf, editor, all |
-| `--filter` | Filter (what): git-diff, git-commit, git-branch, path |
+| `-m, --method` | File selection method: git-diff (default), git-commit, git-branch, fzf, editor, all, path |
 | `-P, --pick` | Interactive commit pick via fzf |
 | `--profile` | Use a named profile from config |
 | `--dry-run` | Preview changes without transferring |
