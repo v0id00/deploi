@@ -20,6 +20,14 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 )
 
+// Mockable function variables for testing.
+var (
+	RunSSHFunc    = runSSH
+	RunRsyncFunc  = runRsync
+	RunSCPFunc    = runSCP
+	RsyncCmdFunc  = exec.Command
+)
+
 // Operation type.
 type Operation int
 
@@ -136,7 +144,7 @@ func executeOnServer(srv config.Server, cfg RunConfig, exclude []string) Transfe
 	// Pre-hooks
 	if srv.Hooks != nil && len(srv.Hooks.Pre) > 0 && !cfg.DryRun {
 		for _, cmd := range srv.Hooks.Pre {
-			out, err := runSSH(srv, cmd)
+			out, err := RunSSHFunc(srv, cmd)
 			if err != nil {
 				return TransferResult{
 					Status: "error",
@@ -150,9 +158,9 @@ func executeOnServer(srv config.Server, cfg RunConfig, exclude []string) Transfe
 	var r TransferResult
 	switch srv.Method {
 	case "rsync":
-		r = runRsync(srv, cfg, exclude)
+		r = RunRsyncFunc(srv, cfg, exclude)
 	case "sftp", "ssh":
-		r = runSCP(srv, cfg)
+		r = RunSCPFunc(srv, cfg)
 	default:
 		return TransferResult{Status: "error", Error: fmt.Sprintf("unknown method: %s", srv.Method)}
 	}
@@ -170,7 +178,7 @@ func executeOnServer(srv config.Server, cfg RunConfig, exclude []string) Transfe
 	// Post-hooks
 	if srv.Hooks != nil && len(srv.Hooks.Post) > 0 && !cfg.DryRun {
 		for _, cmd := range srv.Hooks.Post {
-			out, err := runSSH(srv, cmd)
+			out, err := RunSSHFunc(srv, cmd)
 			if err != nil {
 				return TransferResult{
 					Status:   "error",
@@ -736,7 +744,7 @@ func RunCommands(servers []config.Server, commands []string, cfg RunConfig) []Tr
 				if cfg.DryRun {
 					continue
 				}
-				out, err := runSSH(s, cmd)
+				out, err := RunSSHFunc(s, cmd)
 				if err != nil {
 					r.Status = "error"
 					r.Error = fmt.Sprintf("command %q: %v\n%s", cmd, err, out)
@@ -758,7 +766,7 @@ func EnsureRemoteDirs(srv config.Server, dirs []string) error {
 	if len(dirs) == 0 {
 		return nil
 	}
-	out, err := runSSH(srv, "mkdir -p "+strings.Join(dirs, " "))
+	out, err := RunSSHFunc(srv, "mkdir -p "+strings.Join(dirs, " "))
 	if err != nil {
 		return fmt.Errorf("mkdir remote: %w\n%s", err, out)
 	}
@@ -841,7 +849,7 @@ func RunRollback(servers []config.Server, opts RollbackOptions) []TransferResult
 			}
 			args = append(args, backupSrc, remote)
 
-			cmd := exec.Command("rsync", args...)
+			cmd := RsyncCmdFunc("rsync", args...)
 			output, err := cmd.CombinedOutput()
 
 			r := TransferResult{Server: s.Name}

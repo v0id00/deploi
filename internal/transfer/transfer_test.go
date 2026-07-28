@@ -1,6 +1,6 @@
 package transfer
-
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -189,6 +189,249 @@ total size is 50,000  speedup is 49.50
 		if f != expectedFiles[i] {
 			t.Errorf("Files[%d] = %q, want %q", i, f, expectedFiles[i])
 		}
+	}
+}
+
+// --- mock-based tests ---
+
+func TestExecuteOnServer_PreHookFails(t *testing.T) {
+	defer restoreMocks()()
+	RunSSHFunc = func(srv config.Server, cmd string) (string, error) {
+		return "mock output", fmt.Errorf("mock failure")
+	}
+
+	srv := config.Server{Name: "test", Hooks: &config.Hooks{Pre: []string{"fail"}}}
+	r := executeOnServer(srv, RunConfig{}, nil)
+
+	if r.Status != "error" {
+		t.Errorf("Status = %q, want error", r.Status)
+	}
+	if !stringsContains(r.Error, "pre-hook") {
+		t.Errorf("Error = %q, want pre-hook message", r.Error)
+	}
+}
+
+func TestExecuteOnServer_PostHookFails(t *testing.T) {
+	defer restoreMocks()()
+	RunSSHFunc = func(srv config.Server, cmd string) (string, error) {
+		return "", nil
+	}
+	RunRsyncFunc = func(srv config.Server, cfg RunConfig, exclude []string) TransferResult {
+		return TransferResult{Status: "ok", Files: 5}
+	}
+
+	srv := config.Server{Name: "test", Method: "rsync", Hooks: &config.Hooks{
+		Pre:  []string{"ok"},
+		Post: []string{"fail"},
+	}}
+	// Override Post-hook to fail
+	calls := 0
+	RunSSHFunc = func(srv config.Server, cmd string) (string, error) {
+		calls++
+		if calls > 1 { // post-hook
+			return "", fmt.Errorf("post hook error")
+		}
+		return "", nil
+	}
+
+	r := executeOnServer(srv, RunConfig{}, nil)
+	if r.Status != "error" {
+		t.Errorf("Status = %q, want error", r.Status)
+	}
+	if !stringsContains(r.Error, "post-hook") {
+		t.Errorf("Error = %q, want post-hook message", r.Error)
+	}
+}
+
+func TestExecuteOnServer_UnknownMethod(t *testing.T) {
+	srv := config.Server{Name: "test", Method: "invalid"}
+	r := executeOnServer(srv, RunConfig{}, nil)
+
+	if r.Status != "error" {
+		t.Errorf("Status = %q, want error", r.Status)
+	}
+	if !stringsContains(r.Error, "unknown method") {
+		t.Errorf("Error = %q, want unknown method message", r.Error)
+	}
+}
+
+func TestExecuteOnServer_RsyncMethod(t *testing.T) {
+	defer restoreMocks()()
+	RunRsyncFunc = func(srv config.Server, cfg RunConfig, exclude []string) TransferResult {
+		return TransferResult{Status: "ok", Files: 10, Bytes: 1024}
+	}
+
+	srv := config.Server{Name: "test", Method: "rsync"}
+	r := executeOnServer(srv, RunConfig{}, nil)
+
+	if r.Status != "ok" {
+		t.Errorf("Status = %q, want ok", r.Status)
+	}
+	if r.Files != 10 {
+		t.Errorf("Files = %d, want 10", r.Files)
+	}
+}
+
+func TestExecuteOnServer_SCPMethod(t *testing.T) {
+	defer restoreMocks()()
+	RunSCPFunc = func(srv config.Server, cfg RunConfig) TransferResult {
+		return TransferResult{Status: "ok", Files: 3}
+	}
+
+	srv := config.Server{Name: "test", Method: "sftp"}
+	r := executeOnServer(srv, RunConfig{}, nil)
+
+	if r.Status != "ok" {
+		t.Errorf("Status = %q, want ok", r.Status)
+	}
+}
+
+func TestExecuteOnServer_DryRunSkipsHooks(t *testing.T) {
+	defer restoreMocks()()
+	hookRan := false
+	RunSSHFunc = func(srv config.Server, cmd string) (string, error) {
+		hookRan = true
+		return "", nil
+	}
+	RunRsyncFunc = func(srv config.Server, cfg RunConfig, exclude []string) TransferResult {
+		return TransferResult{Status: "ok"}
+	}
+
+	srv := config.Server{Name: "test", Method: "rsync", Hooks: &config.Hooks{
+		Pre:  []string{"should-not-run"},
+		Post: []string{"should-not-run"},
+	}}
+	_ = executeOnServer(srv, RunConfig{DryRun: true}, nil)
+
+	if hookRan {
+		t.Error("hooks should not run in dry-run mode")
+	}
+}
+
+func TestExecuteOnServer_HookCounts(t *testing.T) {
+	defer restoreMocks()()
+	RunSSHFunc = func(srv config.Server, cmd string) (string, error) {
+		return "", nil
+	}
+	RunRsyncFunc = func(srv config.Server, cfg RunConfig, exclude []string) TransferResult {
+		return TransferResult{Status: "ok"}
+	}
+
+	srv := config.Server{Name: "test", Method: "rsync", Hooks: &config.Hooks{
+		Pre:  []string{"a", "b"},
+		Post: []string{"c", "d", "e"},
+	}}
+	r := executeOnServer(srv, RunConfig{}, nil)
+
+	if r.HooksPre != 2 {
+		t.Errorf("HooksPre = %d, want 2", r.HooksPre)
+	}
+	if r.HooksPost != 3 {
+		t.Errorf("HooksPost = %d, want 3", r.HooksPost)
+	}
+}
+
+func TestExecuteOnServer_TransferErrorReturnsEarly(t *testing.T) {
+	defer restoreMocks()()
+	RunRsyncFunc = func(srv config.Server, cfg RunConfig, exclude []string) TransferResult {
+		return TransferResult{Status: "error", Error: "rsync failed"}
+	}
+	postHookRan := false
+	RunSSHFunc = func(srv config.Server, cmd string) (string, error) {
+		postHookRan = true
+		return "", nil
+	}
+
+	srv := config.Server{Name: "test", Method: "rsync", Hooks: &config.Hooks{
+		Post: []string{"should-not-run"},
+	}}
+	r := executeOnServer(srv, RunConfig{}, nil)
+
+	if r.Status != "error" {
+		t.Errorf("Status = %q, want error", r.Status)
+	}
+	if postHookRan {
+		t.Error("post-hooks should not run after transfer error")
+	}
+}
+
+func TestRunCommands_WithMockSSH(t *testing.T) {
+	defer restoreMocks()()
+	RunSSHFunc = func(srv config.Server, cmd string) (string, error) {
+		return "uptime: 1h", nil
+	}
+
+	servers := []config.Server{
+		{Name: "web1", Host: "10.0.0.1", User: "deploy"},
+		{Name: "web2", Host: "10.0.0.2", User: "deploy"},
+	}
+	results := RunCommands(servers, []string{"uptime"}, RunConfig{Concurrency: 5})
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	for _, r := range results {
+		if r.Status != "ok" {
+			t.Errorf("%s: Status = %q, want ok", r.Server, r.Status)
+		}
+	}
+}
+
+func TestRunCommands_CommandFails(t *testing.T) {
+	defer restoreMocks()()
+	RunSSHFunc = func(srv config.Server, cmd string) (string, error) {
+		return "error output", fmt.Errorf("exit code 1")
+	}
+
+	servers := []config.Server{{Name: "web1", Host: "10.0.0.1", User: "deploy"}}
+	results := RunCommands(servers, []string{"fail"}, RunConfig{Concurrency: 5})
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Status != "error" {
+		t.Errorf("Status = %q, want error", results[0].Status)
+	}
+}
+
+func TestRunCommands_DryRun(t *testing.T) {
+	defer restoreMocks()()
+	ran := false
+	RunSSHFunc = func(srv config.Server, cmd string) (string, error) {
+		ran = true
+		return "", nil
+	}
+
+	servers := []config.Server{{Name: "web1", Host: "10.0.0.1", User: "deploy"}}
+	results := RunCommands(servers, []string{"uptime"}, RunConfig{DryRun: true, Concurrency: 5})
+
+	if ran {
+		t.Error("commands should not run in dry-run mode")
+	}
+	if results[0].Status != "ok" {
+		t.Errorf("Status = %q, want ok", results[0].Status)
+	}
+}
+
+func TestEnsureRemoteDirs(t *testing.T) {
+	defer restoreMocks()()
+	RunSSHFunc = func(srv config.Server, cmd string) (string, error) {
+		if !stringsContains(cmd, "mkdir -p") {
+			t.Errorf("expected mkdir command, got %q", cmd)
+		}
+		return "", nil
+	}
+
+	err := EnsureRemoteDirs(config.Server{Name: "test"}, []string{"/remote/path"})
+	if err != nil {
+		t.Errorf("EnsureRemoteDirs() error: %v", err)
+	}
+}
+
+func TestEnsureRemoteDirs_EmptyDirs(t *testing.T) {
+	err := EnsureRemoteDirs(config.Server{Name: "test"}, nil)
+	if err != nil {
+		t.Errorf("expected nil for empty dirs, got %v", err)
 	}
 }
 
@@ -420,6 +663,20 @@ func TestEnrichRsyncErrorExitCodes(t *testing.T) {
 }
 
 // --- helpers ---
+
+// restoreMocks returns a function that restores all mockable function variables.
+func restoreMocks() func() {
+	oldSSH := RunSSHFunc
+	oldRsync := RunRsyncFunc
+	oldSCP := RunSCPFunc
+	oldCmd := RsyncCmdFunc
+	return func() {
+		RunSSHFunc = oldSSH
+		RunRsyncFunc = oldRsync
+		RunSCPFunc = oldSCP
+		RsyncCmdFunc = oldCmd
+	}
+}
 
 type mockExitError struct {
 	exitCode int
