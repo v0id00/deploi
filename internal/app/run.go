@@ -1276,8 +1276,18 @@ func resolveFiles(ac *appConfig, editor string) (*picker.FileSet, error) {
 		if fil == "path" {
 			return picker.Pick(picker.PickConfig{Source: picker.SourceEditor, Paths: ac.paths, Editor: editor})
 		}
-		// For git filters with editor, show git files in editor
-		return resolveFilter(fil, ac, editor, true)
+		// For git filters with editor, resolve files first then show in editor
+		fs, err := resolveFilter(fil, ac, editor, false)
+		if err != nil {
+			return nil, err
+		}
+		// Show the resolved files in the editor for interactive selection
+		relFiles := make([]string, len(fs.Files))
+		for i, f := range fs.Files {
+			rel, _ := filepath.Rel(cwd(), f)
+			relFiles[i] = rel
+		}
+		return picker.Pick(picker.PickConfig{Source: picker.SourceEditor, Paths: relFiles, Editor: editor})
 	case "all":
 		targets := ac.paths
 		if len(targets) == 0 {
