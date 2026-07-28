@@ -1,6 +1,7 @@
 package picker
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -411,7 +412,130 @@ func TestPickGitDiff_ExcludeStaged(t *testing.T) {
 	}
 }
 
+// --- mock-based tests ---
+
+func TestPickFZFWithPaths(t *testing.T) {
+	defer restorePickerMocks()()
+	// Mock fzf: output first candidate
+	PickerLookPath = func(name string) (string, error) {
+		if name == "fzf" {
+			return "/usr/bin/fzf", nil
+		}
+		return exec.LookPath(name)
+	}
+	PickerExecCommand = func(name string, arg ...string) *exec.Cmd {
+		if name == "fzf" {
+			return exec.Command("sh", "-c", `head -1`)
+		}
+		return exec.Command(name, arg...)
+	}
+
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "pickme.txt"), []byte("data"), 0644)
+	os.WriteFile(filepath.Join(dir, "skipme.txt"), []byte("data"), 0644)
+
+	fs, err := Pick(PickConfig{
+		Source:  SourceFZF,
+		Paths:   []string{filepath.Join(dir, "pickme.txt"), filepath.Join(dir, "skipme.txt")},
+		BaseDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("Pick() error: %v", err)
+	}
+	if fs.Count != 1 {
+		t.Errorf("Count = %d, want 1", fs.Count)
+	}
+}
+
+func TestPickFZFFallbackToEditor(t *testing.T) {
+	defer restorePickerMocks()()
+	// Mock fzf NOT found → falls back to editor
+	PickerLookPath = func(name string) (string, error) {
+		if name == "fzf" {
+			return "", fmt.Errorf("not found")
+		}
+		return exec.LookPath(name)
+	}
+	// When editor falls back, it runs the editor command.
+	// Mock it with "cat" which preserves the temp file content.
+	PickerExecCommand = func(name string, arg ...string) *exec.Cmd {
+		if name != "git" && name != "sh" {
+			return exec.Command("cat", arg...)
+		}
+		return exec.Command(name, arg...)
+	}
+
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "test.txt"), []byte("data"), 0644)
+
+	// fzf with explicit paths + no fzf binary → editor mode with candidates
+	// The mock "cat" reads the temp file, so all candidates pass through
+	fs, err := Pick(PickConfig{
+		Source:  SourceFZF,
+		Paths:   []string{filepath.Join(dir, "test.txt")},
+		BaseDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("Pick() error: %v", err)
+	}
+	if fs.Source != SourceFZF && fs.Source != SourceEditor {
+		t.Errorf("Source = %v, want SourceFZF or SourceEditor (falls back to editor)", fs.Source)
+	}
+	if fs.Count != 1 {
+		t.Errorf("Count = %d, want 1", fs.Count)
+	}
+}
+
+func TestPickEditorWithPaths(t *testing.T) {
+	defer restorePickerMocks()()
+	// Mock editor: just cat (preserves temp file)
+	PickerExecCommand = func(name string, arg ...string) *exec.Cmd {
+		if name != "git" && name != "sh" {
+			return exec.Command("cat", arg...)
+		}
+		return exec.Command(name, arg...)
+	}
+
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "editme.txt"), []byte("data"), 0644)
+
+	fs, err := Pick(PickConfig{
+		Source: SourceEditor,
+		Paths:  []string{filepath.Join(dir, "editme.txt")},
+	})
+	if err != nil {
+		t.Fatalf("Pick() error: %v", err)
+	}
+	if fs.Count != 1 {
+		t.Errorf("Count = %d, want 1", fs.Count)
+	}
+}
+
+func TestPickGitBranchFallback(t *testing.T) {
+	// Test pickGitBranch without a branch name
+	dir := t.TempDir()
+	seedRepo(t, dir, "a.txt", "a")
+
+	_, err := Pick(PickConfig{
+		Source: SourceGitBranch,
+		GitDir: dir,
+		// No branch set — should error
+	})
+	if err == nil {
+		t.Fatal("expected error for empty branch name")
+	}
+}
+
 // --- helpers ---
+
+func restorePickerMocks() func() {
+	oldCmd := PickerExecCommand
+	oldLook := PickerLookPath
+	return func() {
+		PickerExecCommand = oldCmd
+		PickerLookPath = oldLook
+	}
+}
 
 func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()

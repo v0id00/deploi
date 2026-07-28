@@ -1,6 +1,8 @@
 package app
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -196,7 +198,7 @@ func TestIsExcluded(t *testing.T) {
 	}
 }
 
-func TestEnrichConnError(t *testing.T) {
+func TestEnrichConnErrorAllCases(t *testing.T) {
 	tests := []struct {
 		err  string
 		want string
@@ -214,6 +216,83 @@ func TestEnrichConnError(t *testing.T) {
 				t.Errorf("enrichConnError(%q) = %q, want to contain %q", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRunConfigGenerateToFile(t *testing.T) {
+	tmpPath := filepath.Join(t.TempDir(), "generated.toml")
+	err := runConfigGenerate(tmpPath)
+	if err != nil {
+		t.Fatalf("runConfigGenerate() error: %v", err)
+	}
+	data, err := os.ReadFile(tmpPath)
+	if err != nil {
+		t.Fatalf("read generated file: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("generated config is empty")
+	}
+	// Should contain key TOML sections
+	for _, section := range []string{"[defaults]", "[servers.prod-web-1]", "[servers.staging]"} {
+		if !bytesContains(data, []byte(section)) {
+			t.Errorf("generated config missing section: %s", section)
+		}
+	}
+}
+
+func TestRunConfigGenerateToStdout(t *testing.T) {
+	// Capture stdout
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := runConfigGenerate("-")
+	if err != nil {
+		os.Stdout = oldStdout
+		t.Fatalf("runConfigGenerate(\"-\") error: %v", err)
+	}
+	w.Close()
+	os.Stdout = oldStdout
+
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
+
+	if len(output) == 0 {
+		t.Fatal("stdout output is empty")
+	}
+	if !stringsContains(output, "[defaults]") {
+		t.Error("stdout output missing [defaults] section")
+	}
+}
+
+func TestPrintResults(t *testing.T) {
+	// Capture stdout
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	results := []transfer.TransferResult{
+		{Server: "web1", Status: "ok", Files: 5, Speed: "1.2MB/s", Elapsed: "2.1s"},
+		{Server: "web2", Status: "error", Error: "connection refused"},
+	}
+	printResults(results)
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
+
+	if !stringsContains(output, "web1") {
+		t.Error("output missing web1")
+	}
+	if !stringsContains(output, "web2") {
+		t.Error("output missing web2")
+	}
+	if !stringsContains(output, "connection refused") {
+		t.Error("output missing error detail")
 	}
 }
 
@@ -310,6 +389,19 @@ type mockConnErr struct {
 }
 
 func (e *mockConnErr) Error() string { return e.msg }
+
+func bytesContains(b, substr []byte) bool {
+	return len(b) >= len(substr) && bytesIndex(b, substr) >= 0
+}
+
+func bytesIndex(b, substr []byte) int {
+	for i := 0; i <= len(b)-len(substr); i++ {
+		if b[i] == substr[0] && (len(substr) == 1 || string(b[i:i+len(substr)]) == string(substr)) {
+			return i
+		}
+	}
+	return -1
+}
 
 func stringSliceEqual(a, b []string) bool {
 	if len(a) != len(b) {

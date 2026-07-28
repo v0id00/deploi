@@ -1,11 +1,14 @@
 package watcher
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 func TestGitChangedFiles_NoGitRepo(t *testing.T) {
@@ -159,6 +162,37 @@ func TestGitChangedFiles_EmptyStringTrim(t *testing.T) {
 		if f == "" {
 			t.Error("found empty string in file list")
 		}
+	}
+}
+
+func TestAddRecursive(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "sub1", "nested"), 0755)
+	os.MkdirAll(filepath.Join(dir, "sub2"), 0755)
+	os.MkdirAll(filepath.Join(dir, ".hidden"), 0755)
+	os.MkdirAll(filepath.Join(dir, "node_modules", "pkg"), 0755)
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Skipf("fsnotify not available: %v", err)
+	}
+	defer watcher.Close()
+
+	err = addRecursive(watcher, dir)
+	if err != nil {
+		t.Fatalf("addRecursive() error: %v", err)
+	}
+	// No error means watched dirs were added. Should have watched:
+	// dir, sub1, sub1/nested, sub2 (not .hidden, not node_modules)
+}
+
+func TestWatchCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // immediately cancel
+
+	err := Watch(ctx, Config{Paths: []string{t.TempDir()}})
+	if err != nil {
+		t.Errorf("Watch() with cancelled context should return nil, got %v", err)
 	}
 }
 

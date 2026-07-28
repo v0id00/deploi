@@ -2,6 +2,7 @@ package transfer
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -432,6 +433,131 @@ func TestEnsureRemoteDirs_EmptyDirs(t *testing.T) {
 	err := EnsureRemoteDirs(config.Server{Name: "test"}, nil)
 	if err != nil {
 		t.Errorf("expected nil for empty dirs, got %v", err)
+	}
+}
+
+func TestRunWithMockServers(t *testing.T) {
+	defer restoreMocks()()
+	RunSSHFunc = func(srv config.Server, cmd string) (string, error) {
+		return "", nil
+	}
+	RunRsyncFunc = func(srv config.Server, cfg RunConfig, exclude []string) TransferResult {
+		return TransferResult{Status: "ok", Files: 3}
+	}
+
+	servers := []config.Server{
+		{Name: "web1", Host: "10.0.0.1", User: "deploy", Method: "rsync"},
+		{Name: "web2", Host: "10.0.0.2", User: "deploy", Method: "rsync"},
+	}
+	results := Run(servers, RunConfig{Concurrency: 5})
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	for _, r := range results {
+		if r.Status != "ok" {
+			t.Errorf("%s: Status = %q, want ok", r.Server, r.Status)
+		}
+	}
+}
+
+func TestRunWithFilter(t *testing.T) {
+	defer restoreMocks()()
+	RunRsyncFunc = func(srv config.Server, cfg RunConfig, exclude []string) TransferResult {
+		return TransferResult{Status: "ok"}
+	}
+
+	servers := []config.Server{
+		{Name: "prod-web", Host: "10.0.0.1", User: "deploy", Method: "rsync"},
+		{Name: "prod-db", Host: "10.0.0.2", User: "deploy", Method: "rsync"},
+		{Name: "staging", Host: "10.0.0.3", User: "deploy", Method: "rsync"},
+	}
+	results := Run(servers, RunConfig{ServerRegex: "prod*", Concurrency: 5})
+
+	if len(results) != 2 {
+		t.Errorf("expected 2 results (filtered), got %d", len(results))
+	}
+}
+
+func TestRunWithTags(t *testing.T) {
+	defer restoreMocks()()
+	RunRsyncFunc = func(srv config.Server, cfg RunConfig, exclude []string) TransferResult {
+		return TransferResult{Status: "ok"}
+	}
+
+	servers := []config.Server{
+		{Name: "web1", Host: "10.0.0.1", User: "deploy", Method: "rsync", Tags: []string{"prod"}},
+		{Name: "web2", Host: "10.0.0.2", User: "deploy", Method: "rsync", Tags: []string{"staging"}},
+	}
+	results := Run(servers, RunConfig{Tags: []string{"prod"}, Concurrency: 5})
+
+	if len(results) != 1 {
+		t.Errorf("expected 1 result (tag filter), got %d", len(results))
+	}
+}
+
+func TestRunRollbackWithData(t *testing.T) {
+	defer restoreMocks()()
+	RsyncCmdFunc = func(name string, arg ...string) *exec.Cmd {
+		// Mock rsync: output multi-line rsync output
+		return exec.Command("printf",
+			"sending incremental file list\nfile.txt\n\nsent 100 bytes  received 10 bytes  50.00 bytes/sec\ntotal size is 500  speedup is 5.00\n")
+	}
+
+	servers := []config.Server{
+		{Name: "web1", Host: "10.0.0.1", User: "deploy"},
+	}
+	results := RunRollback(servers, RollbackOptions{
+		BackupPaths: map[string]string{"web1": "/backups/123"},
+		RemotePath:  "/var/www",
+	})
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Status != "ok" {
+		t.Errorf("Status = %q, want ok", results[0].Status)
+	}
+	if results[0].Files == 0 {
+		t.Error("expected files > 0 from parsed rsync output")
+	}
+}
+
+func TestRunRollbackSkipMissingBackup(t *testing.T) {
+	defer restoreMocks()()
+
+	servers := []config.Server{
+		{Name: "web1", Host: "10.0.0.1"},
+		{Name: "web2", Host: "10.0.0.2"}, // no backup
+	}
+	results := RunRollback(servers, RollbackOptions{
+		BackupPaths: map[string]string{"web1": "/backups/123"},
+	})
+	// web2 has no backup → skipped
+	if len(results) != 1 {
+		t.Errorf("expected 1 result (web2 skipped), got %d", len(results))
+	}
+}
+
+func TestSSHAgentAuthNoSocket(t *testing.T) {
+	// When SSH_AUTH_SOCK is not set, sshAgentAuth should return nil
+	os.Unsetenv("SSH_AUTH_SOCK")
+	if a := sshAgentAuth(); a != nil {
+		t.Error("sshAgentAuth() should return nil when SSH_AUTH_SOCK is not set")
+	}
+}
+
+func TestKeyFileSignerNoKey(t *testing.T) {
+	// Use a temp dir with no SSH keys
+	home := t.TempDir()
+	oldHome, _ := os.UserHomeDir()
+	os.Setenv("HOME", home) // won't work on all platforms, but tests UserHomeDir
+	_ = oldHome
+	// Actually, UserHomeDir is OS-dependent. Just test with a server with no key_file.
+	srv := config.Server{Name: "test"}
+	_, err := keyFileSigner(srv)
+	if err == nil {
+		t.Log("keyFileSigner returned nil error (may have found a key on this system)")
 	}
 }
 

@@ -10,6 +10,12 @@ import (
 	"strings"
 )
 
+// Mockable exec variables for testing.
+var (
+	PickerExecCommand = exec.Command
+	PickerLookPath    = exec.LookPath
+)
+
 // SourceType defines how files are selected.
 type SourceType int
 
@@ -169,7 +175,7 @@ func pickGitDiff(gitDir, baseDir string, includeStaged, includeUntracked bool) (
 	//   XY = 2 status chars (space, M, A, D, R, ?, etc.)
 	//   Then a single space separator, then the filename.
 	// IMPORTANT: do NOT trim the line — leading space IS the status field.
-	if out, err := exec.Command("git", "-C", gitDir, "status", "--porcelain").Output(); err == nil {
+	if out, err := PickerExecCommand("git", "-C", gitDir, "status", "--porcelain").Output(); err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
 			if len(line) < 4 {
 				continue
@@ -242,11 +248,11 @@ func pickGitCommit(gitDir, commit string, baseDir string) (*FileSet, error) {
 
 	// For the root commit (no parent), add --root flag
 	args := []string{"-C", gitDir, "diff-tree", "--no-commit-id", "--name-only", "-r"}
-	if _, err := exec.Command("git", "-C", gitDir, "rev-parse", commit+"~1").Output(); err != nil {
+	if _, err := PickerExecCommand("git", "-C", gitDir, "rev-parse", commit+"~1").Output(); err != nil {
 		args = append(args, "--root")
 	}
 	args = append(args, commit)
-	cmd := exec.Command("git", args...)
+	cmd := PickerExecCommand("git", args...)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git diff-tree %s: %w", commit, err)
@@ -286,7 +292,7 @@ func pickGitBranch(gitDir, branch string, baseDir string) (*FileSet, error) {
 	}
 
 	// Get current branch
-	cmd := exec.Command("git", "-C", gitDir, "rev-parse", "--abbrev-ref", "HEAD")
+	cmd := PickerExecCommand("git", "-C", gitDir, "rev-parse", "--abbrev-ref", "HEAD")
 	current, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git current branch: %w", err)
@@ -295,7 +301,7 @@ func pickGitBranch(gitDir, branch string, baseDir string) (*FileSet, error) {
 
 	// Files different between current branch and target branch
 	rangeSpec := fmt.Sprintf("%s..%s", branch, currentBranch)
-	cmd = exec.Command("git", "-C", gitDir, "diff", "--name-only", rangeSpec)
+	cmd = PickerExecCommand("git", "-C", gitDir, "diff", "--name-only", rangeSpec)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git diff %s: %w", rangeSpec, err)
@@ -325,7 +331,7 @@ func pickGitBranch(gitDir, branch string, baseDir string) (*FileSet, error) {
 // If gitDir is set, changed files are used as candidates.
 func pickFZF(paths []string, gitDir, baseDir string) (*FileSet, error) {
 	// Check if fzf is installed
-	if _, err := exec.LookPath("fzf"); err != nil {
+	if _, err := PickerLookPath("fzf"); err != nil {
 		// Fall back to editor mode
 		return pickEditor(paths, "", baseDir)
 	}
@@ -333,7 +339,7 @@ func pickFZF(paths []string, gitDir, baseDir string) (*FileSet, error) {
 	candidates := paths
 	if len(candidates) == 0 && gitDir != "" {
 		// Try git status to show project files
-		if out, err := exec.Command("git", "-C", gitDir, "status", "--porcelain").Output(); err == nil {
+		if out, err := PickerExecCommand("git", "-C", gitDir, "status", "--porcelain").Output(); err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
 				if len(line) < 4 {
 					continue
@@ -358,14 +364,14 @@ func pickFZF(paths []string, gitDir, baseDir string) (*FileSet, error) {
 		if root != "" {
 			// Also try git ls-files for tracked files
 			if gitDir != "" {
-				if out, err := exec.Command("git", "-C", gitDir, "ls-files").Output(); err == nil {
+				if out, err := PickerExecCommand("git", "-C", gitDir, "ls-files").Output(); err == nil {
 					for _, f := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 						if f != "" {
 							candidates = append(candidates, f)
 						}
 					}
 					// Also add untracked files
-					if out2, err := exec.Command("git", "-C", gitDir, "ls-files", "--others", "--exclude-standard").Output(); err == nil {
+					if out2, err := PickerExecCommand("git", "-C", gitDir, "ls-files", "--others", "--exclude-standard").Output(); err == nil {
 						for _, f := range strings.Split(strings.TrimSpace(string(out2)), "\n") {
 							if f != "" {
 								candidates = append(candidates, f)
@@ -399,7 +405,7 @@ func pickFZF(paths []string, gitDir, baseDir string) (*FileSet, error) {
 
 	// Run fzf with multi-select
 	input := strings.Join(candidates, "\n")
-	cmd := exec.Command("fzf", "--multi", "--prompt=Select files (Tab to multi-select)> ")
+	cmd := PickerExecCommand("fzf", "--multi", "--prompt=Select files (Tab to multi-select)> ")
 	cmd.Stdin = strings.NewReader(input)
 	cmd.Stderr = os.Stderr
 
@@ -442,7 +448,7 @@ func pickEditor(paths []string, editor, baseDir string) (*FileSet, error) {
 	candidates := paths
 	if len(candidates) == 0 {
 		// git status --porcelain: "XY filename" — do NOT trim leading space
-		if out, err := exec.Command("git", "status", "--porcelain").Output(); err == nil {
+		if out, err := PickerExecCommand("git", "status", "--porcelain").Output(); err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
 				if len(line) < 4 {
 					continue
@@ -482,7 +488,7 @@ func pickEditor(paths []string, editor, baseDir string) (*FileSet, error) {
 	tmpFile.Close()
 
 	// Run editor
-	cmd := exec.Command(editor, tmpPath)
+	cmd := PickerExecCommand(editor, tmpPath)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -578,11 +584,11 @@ func pickCommitFZF(gitDir, baseDir, editor string) (*FileSet, error) {
 	}
 
 	// Check if fzf is available
-	_, fzfErr := exec.LookPath("fzf")
+	_, fzfErr := PickerLookPath("fzf")
 	hasFZF := fzfErr == nil
 
 	// Get recent commits (last 50)
-	cmd := exec.Command("git", "-C", gitDir, "log", "--oneline", "-50")
+	cmd := PickerExecCommand("git", "-C", gitDir, "log", "--oneline", "-50")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git log: %w", err)
@@ -597,7 +603,7 @@ func pickCommitFZF(gitDir, baseDir, editor string) (*FileSet, error) {
 	var selectedCommit string
 	if hasFZF {
 		input := strings.Join(commits, "\n")
-		cmd = exec.Command("fzf", "--prompt=Select commit> ", "--no-multi")
+		cmd = PickerExecCommand("fzf", "--prompt=Select commit> ", "--no-multi")
 		cmd.Stdin = strings.NewReader(input)
 		cmd.Stderr = os.Stderr
 		out, err = cmd.Output()
@@ -624,7 +630,7 @@ func pickCommitFZF(gitDir, baseDir, editor string) (*FileSet, error) {
 		if e == "" {
 			e = FindEditor()
 		}
-		editCmd := exec.Command(e, tmpPath)
+		editCmd := PickerExecCommand(e, tmpPath)
 		editCmd.Stdin = os.Stdin
 		editCmd.Stdout = os.Stdout
 		editCmd.Stderr = os.Stderr
@@ -645,11 +651,11 @@ func pickCommitFZF(gitDir, baseDir, editor string) (*FileSet, error) {
 
 	// Get files in that commit
 	args := []string{"-C", gitDir, "diff-tree", "--no-commit-id", "--name-only", "-r"}
-	if _, err := exec.Command("git", "-C", gitDir, "rev-parse", hash+"~1").Output(); err != nil {
+	if _, err := PickerExecCommand("git", "-C", gitDir, "rev-parse", hash+"~1").Output(); err != nil {
 		args = append(args, "--root")
 	}
 	args = append(args, hash)
-	cmd = exec.Command("git", args...)
+	cmd = PickerExecCommand("git", args...)
 	out, err = cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git diff-tree %s: %w", hash, err)
@@ -663,7 +669,7 @@ func pickCommitFZF(gitDir, baseDir, editor string) (*FileSet, error) {
 	// If fzf available, let user pick which files from the commit to transfer
 	if hasFZF && len(files) > 1 {
 		input := strings.Join(files, "\n")
-		cmd = exec.Command("fzf", "--multi", "--prompt=Select files from commit (Tab to multi-select)> ")
+		cmd = PickerExecCommand("fzf", "--multi", "--prompt=Select files from commit (Tab to multi-select)> ")
 		cmd.Stdin = strings.NewReader(input)
 		cmd.Stderr = os.Stderr
 		out, err = cmd.Output()
@@ -700,7 +706,7 @@ func pickCommitFZF(gitDir, baseDir, editor string) (*FileSet, error) {
 // ---------------------------------------------------------------------------
 
 func isGitRepo(dir string) bool {
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "--git-dir")
+	cmd := PickerExecCommand("git", "-C", dir, "rev-parse", "--git-dir")
 	return cmd.Run() == nil
 }
 
@@ -740,7 +746,7 @@ func FindEditor() string {
 		return e
 	}
 	for _, c := range []string{"vim", "nano", "hx", "micro"} {
-		if _, err := exec.LookPath(c); err == nil {
+		if _, err := PickerLookPath(c); err == nil {
 			return c
 		}
 	}
