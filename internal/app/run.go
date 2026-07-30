@@ -588,6 +588,26 @@ func runPushPull(ac *appConfig, op transfer.Operation) error {
 			return err
 		}
 		servers = selected
+	} else if ac.server != "" || ac.tags != "" {
+		tagList := splitTags(ac.tags)
+		var filtered []config.Server
+		for _, s := range servers {
+			if ac.server != "" {
+				if matched, _ := filepath.Match(ac.server, s.Name); !matched {
+					continue
+				}
+			}
+			if len(tagList) > 0 {
+				if !transfer.HasAnyTag(s.Tags, tagList) {
+					continue
+				}
+			}
+			filtered = append(filtered, s)
+		}
+		servers = filtered
+		if len(servers) == 0 {
+			return fmt.Errorf("no servers match filter: -s %q -t %s", ac.server, ac.tags)
+		}
 	}
 
 	// ── Section: File Selection ──
@@ -1009,6 +1029,28 @@ func runRemote(ac *appConfig, commands []string) error {
 		servers = selected
 		ac.server = ""
 		ac.tags = ""
+	} else if ac.server != "" || ac.tags != "" {
+		tagList := splitTags(ac.tags)
+		var filtered []config.Server
+		for _, s := range servers {
+			if ac.server != "" {
+				if matched, _ := filepath.Match(ac.server, s.Name); !matched {
+					continue
+				}
+			}
+			if len(tagList) > 0 {
+				if !transfer.HasAnyTag(s.Tags, tagList) {
+					continue
+				}
+			}
+			filtered = append(filtered, s)
+		}
+		servers = filtered
+		ac.server = ""
+		ac.tags = ""
+		if len(servers) == 0 {
+			return fmt.Errorf("no servers match filter: -s %q -t %s", ac.server, ac.tags)
+		}
 	}
 
 	tc := transfer.RunConfig{
