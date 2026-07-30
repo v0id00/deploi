@@ -33,6 +33,13 @@ clean:
 test:
 	go test ./...
 
+.PHONY: test-local test-all
+test-local: build
+	./build/deploi push -s local -m all --force --no-preview
+
+test-all: build
+	cd /tmp/deploi-test && ls -la
+
 lint:
 	@which golangci-lint >/dev/null 2>&1 || { echo "golangci-lint not installed"; exit 1; }
 	golangci-lint run ./...

@@ -126,7 +126,7 @@ func Pick(cfg PickConfig) (*FileSet, error) {
 // pickManual returns the explicitly provided file paths.
 func pickManual(paths []string, baseDir string) (*FileSet, error) {
 	if len(paths) == 0 {
-		return nil, fmt.Errorf("no file paths provided for manual selection")
+		return nil, fmt.Errorf("no file paths provided. Usage: deploi push -m path <file1> <file2> ...")
 	}
 
 	// Check each path exists and resolve to absolute
@@ -336,6 +336,11 @@ func pickFZF(paths []string, gitDir, baseDir string) (*FileSet, error) {
 		return pickEditor(paths, "", baseDir)
 	}
 
+	// Check if running in a real terminal
+	if !isRealTerminal() {
+		return nil, fmt.Errorf("fzf requires an interactive terminal. Use -m editor or -m all instead, or provide paths as arguments")
+	}
+
 	candidates := paths
 	if len(candidates) == 0 && gitDir != "" {
 		// Try git status to show project files
@@ -400,14 +405,17 @@ func pickFZF(paths []string, gitDir, baseDir string) (*FileSet, error) {
 	}
 
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("no candidates for fzf selection")
+		return nil, fmt.Errorf("no files found for fzf selection. Use -m editor or -m all instead, or provide file paths as arguments")
 	}
 
 	// Run fzf with multi-select
 	input := strings.Join(candidates, "\n")
 	cmd := PickerExecCommand("fzf", "--multi", "--prompt=Select files (Tab to multi-select)> ")
 	cmd.Stdin = strings.NewReader(input)
-	cmd.Stderr = os.Stderr
+
+	// Capture stderr to detect ioctl/terminal errors
+	var stderrBuf strings.Builder
+	cmd.Stderr = &stderrBuf
 
 	out, err := cmd.Output()
 	if err != nil {
@@ -415,7 +423,11 @@ func pickFZF(paths []string, gitDir, baseDir string) (*FileSet, error) {
 			// User cancelled (Ctrl+C / Esc)
 			return nil, fmt.Errorf("selection cancelled")
 		}
-		return nil, fmt.Errorf("fzf: %w", err)
+		errStr := stderrBuf.String()
+		if strings.Contains(errStr, "ioctl") || strings.Contains(errStr, "inappropriate") {
+			return nil, fmt.Errorf("fzf requires an interactive terminal. Use -m editor or -m all instead, or provide paths as arguments")
+		}
+		return nil, fmt.Errorf("fzf: %w\n%s", err, errStr)
 	}
 
 	selected := ParseFileList(string(out))
@@ -442,7 +454,11 @@ func pickFZF(paths []string, gitDir, baseDir string) (*FileSet, error) {
 // pickEditor opens an editor with the file list and lets the user select.
 func pickEditor(paths []string, editor, baseDir string) (*FileSet, error) {
 	if editor == "" {
-		editor = FindEditor()
+		var err error
+		editor, err = FindEditor()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	candidates := paths
@@ -583,6 +599,11 @@ func pickCommitFZF(gitDir, baseDir, editor string) (*FileSet, error) {
 		return nil, fmt.Errorf("not a git repository: %s", gitDir)
 	}
 
+	// Check if running in a real terminal
+	if !isRealTerminal() {
+		return nil, fmt.Errorf("fzf commit picker requires an interactive terminal. Use --commit HASH to specify a commit directly")
+	}
+
 	// Check if fzf is available
 	_, fzfErr := PickerLookPath("fzf")
 	hasFZF := fzfErr == nil
@@ -605,13 +626,19 @@ func pickCommitFZF(gitDir, baseDir, editor string) (*FileSet, error) {
 		input := strings.Join(commits, "\n")
 		cmd = PickerExecCommand("fzf", "--prompt=Select commit> ", "--no-multi")
 		cmd.Stdin = strings.NewReader(input)
-		cmd.Stderr = os.Stderr
+		// Capture stderr to detect ioctl/terminal errors
+		var stderrBuf strings.Builder
+		cmd.Stderr = &stderrBuf
 		out, err = cmd.Output()
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 130 {
 				return nil, fmt.Errorf("selection cancelled")
 			}
-			return nil, fmt.Errorf("fzf commit picker: %w", err)
+			errStr := stderrBuf.String()
+			if strings.Contains(errStr, "ioctl") || strings.Contains(errStr, "inappropriate") {
+				return nil, fmt.Errorf("fzf commit picker requires an interactive terminal. Use --commit HASH to specify a commit directly")
+			}
+			return nil, fmt.Errorf("fzf commit picker: %w\n%s", err, errStr)
 		}
 		selectedCommit = strings.TrimSpace(string(out))
 	} else {
@@ -628,7 +655,11 @@ func pickCommitFZF(gitDir, baseDir, editor string) (*FileSet, error) {
 
 		e := editor
 		if e == "" {
-			e = FindEditor()
+			var err error
+			e, err = FindEditor()
+			if err != nil {
+				return nil, err
+			}
 		}
 		editCmd := PickerExecCommand(e, tmpPath)
 		editCmd.Stdin = os.Stdin
@@ -737,18 +768,24 @@ func ParseEditorOutput(content string) []string {
 	return selected
 }
 
+// isRealTerminal checks if stdin is a real terminal (not piped).
+func isRealTerminal() bool {
+	stat, _ := os.Stdin.Stat()
+	return (stat.Mode() & os.ModeCharDevice) != 0
+}
+
 // FindEditor finds an available editor.
-func FindEditor() string {
+func FindEditor() (string, error) {
 	if e := os.Getenv("VISUAL"); e != "" {
-		return e
+		return e, nil
 	}
 	if e := os.Getenv("EDITOR"); e != "" {
-		return e
+		return e, nil
 	}
 	for _, c := range []string{"vim", "nano", "hx", "micro"} {
 		if _, err := PickerLookPath(c); err == nil {
-			return c
+			return c, nil
 		}
 	}
-	return "vim"
+	return "", fmt.Errorf("no editor found. Set $VISUAL or $EDITOR, or install one of: vim, nano, hx, micro")
 }

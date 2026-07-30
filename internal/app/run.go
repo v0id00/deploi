@@ -1287,16 +1287,23 @@ func resolveFiles(ac *appConfig, editor string) (*picker.FileSet, error) {
 
 	switch method {
 	case "git-diff":
-		return picker.Pick(picker.PickConfig{
+		fset, err := picker.Pick(picker.PickConfig{
 			Source:           picker.SourceGitDiff,
 			GitDir:           baseDir,
 			IncludeStaged:    !ac.noStaged,
 			IncludeUntracked: true,
 		})
+		if err != nil {
+			return nil, fmt.Errorf("git-diff: %w", err)
+		}
+		return fset, nil
 
 	case "git-commit":
 		// Interactive commit picker when no hash given
 		if ac.commit == "" || ac.pick {
+			if !isRealTerminal() {
+				return nil, fmt.Errorf("interactive commit picker requires a terminal. Use --commit HASH to specify a commit directly")
+			}
 			return picker.Pick(picker.PickConfig{
 				Source:      picker.SourceFZFCommit,
 				GitDir:      baseDir,
@@ -1304,57 +1311,96 @@ func resolveFiles(ac *appConfig, editor string) (*picker.FileSet, error) {
 				Editor:      editor,
 			})
 		}
-		return picker.Pick(picker.PickConfig{
+		fset, err := picker.Pick(picker.PickConfig{
 			Source: picker.SourceGitCommit,
 			GitDir: baseDir,
 			Commit: ac.commit,
 		})
+		if err != nil {
+			return nil, fmt.Errorf("git-commit: %w", err)
+		}
+		return fset, nil
 
 	case "git-branch":
 		if ac.branch == "" {
+			if branches := getAvailableBranches(baseDir); len(branches) > 0 {
+				return nil, fmt.Errorf("--branch is required with -m git-branch. Available branches: %s", strings.Join(branches, ", "))
+			}
 			return nil, fmt.Errorf("--branch is required with -m git-branch")
 		}
-		return picker.Pick(picker.PickConfig{
+		fset, err := picker.Pick(picker.PickConfig{
 			Source: picker.SourceGitBranch,
 			GitDir: baseDir,
 			Branch: ac.branch,
 		})
+		if err != nil {
+			return nil, fmt.Errorf("git-branch: %w", err)
+		}
+		return fset, nil
 
 	case "fzf":
-		return picker.Pick(picker.PickConfig{
+		if !isRealTerminal() {
+			fmt.Fprintf(os.Stderr, "  not a terminal; falling back to editor mode\n")
+			fset, err := picker.Pick(picker.PickConfig{
+				Source: picker.SourceEditor,
+				Paths:  ac.paths,
+				Editor: editor,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("editor: %w", err)
+			}
+			return fset, nil
+		}
+		fset, err := picker.Pick(picker.PickConfig{
 			Source: picker.SourceFZF,
 			Paths:  ac.paths,
 			GitDir: baseDir,
 			Editor: editor,
 		})
+		if err != nil {
+			return nil, fmt.Errorf("fzf: %w", err)
+		}
+		return fset, nil
 
 	case "editor":
-		return picker.Pick(picker.PickConfig{
+		fset, err := picker.Pick(picker.PickConfig{
 			Source: picker.SourceEditor,
 			Paths:  ac.paths,
 			Editor: editor,
 		})
+		if err != nil {
+			return nil, fmt.Errorf("editor: %w", err)
+		}
+		return fset, nil
 
 	case "all":
 		targets := ac.paths
 		if len(targets) == 0 {
 			targets = []string{"."}
 		}
-		return picker.Pick(picker.PickConfig{
+		fset, err := picker.Pick(picker.PickConfig{
 			Source:  picker.SourceAll,
 			Paths:   targets,
 			BaseDir: baseDir,
 		})
+		if err != nil {
+			return nil, fmt.Errorf("all: %w", err)
+		}
+		return fset, nil
 
 	case "path":
 		if len(ac.paths) == 0 {
-			return nil, fmt.Errorf("file paths required. Usage: deploi push <file1> <file2> ...")
+			return nil, fmt.Errorf("file paths required when using -m path. Example: deploi push -s SERVER -m path file1.php file2.php")
 		}
-		return picker.Pick(picker.PickConfig{
+		fset, err := picker.Pick(picker.PickConfig{
 			Source:  picker.SourceManual,
 			Paths:   ac.paths,
 			BaseDir: baseDir,
 		})
+		if err != nil {
+			return nil, fmt.Errorf("path: %w", err)
+		}
+		return fset, nil
 
 	default:
 		return nil, fmt.Errorf("unknown method: %s (use: git-diff, git-commit, git-branch, fzf, editor, all, path)", method)
@@ -1404,6 +1450,19 @@ func applyProfile(ac *appConfig, p config.Profile) {
 	if len(p.Exclude) > 0 {
 		ac.exclude = p.Exclude
 	}
+}
+
+func getAvailableBranches(baseDir string) []string {
+	cmd := exec.Command("git", "-C", baseDir, "branch", "--format=%(refname:short)")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil
+	}
+	return lines
 }
 
 // ---------------------------------------------------------------------------
@@ -1716,7 +1775,10 @@ func pickServersFZF(servers []config.Server, serverFilter string, tagFilter []st
 	os.WriteFile(tmpPath, []byte(content), 0644)
 	tmpFile.Close()
 
-	editor := picker.FindEditor()
+	editor, err := picker.FindEditor()
+	if err != nil {
+		return nil, fmt.Errorf("find editor: %w", err)
+	}
 	editCmd := exec.Command(editor, tmpPath)
 	editCmd.Stdin = os.Stdin
 	editCmd.Stdout = os.Stdout

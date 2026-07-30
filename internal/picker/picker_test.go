@@ -93,7 +93,10 @@ func TestFindEditor_FallsBackToVim(t *testing.T) {
 		os.Setenv("EDITOR", origEditor)
 	}()
 
-	editor := FindEditor()
+	editor, err := FindEditor()
+	if err != nil {
+		t.Fatalf("FindEditor() error: %v", err)
+	}
 	if editor == "" {
 		t.Fatal("FindEditor() returned empty string")
 	}
@@ -111,7 +114,9 @@ func TestFindEditor_UsesVISUAL(t *testing.T) {
 	defer os.Unsetenv("VISUAL")
 	os.Unsetenv("EDITOR")
 
-	if got := FindEditor(); got != "code" {
+	if got, err := FindEditor(); err != nil {
+		t.Fatalf("FindEditor() error: %v", err)
+	} else if got != "code" {
 		t.Errorf("FindEditor() = %q, want code", got)
 	}
 }
@@ -121,7 +126,9 @@ func TestFindEditor_UsesEDITOR(t *testing.T) {
 	os.Setenv("EDITOR", "nano")
 	defer os.Unsetenv("EDITOR")
 
-	if got := FindEditor(); got != "nano" {
+	if got, err := FindEditor(); err != nil {
+		t.Fatalf("FindEditor() error: %v", err)
+	} else if got != "nano" {
 		t.Errorf("FindEditor() = %q, want nano", got)
 	}
 }

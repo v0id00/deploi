@@ -141,8 +141,8 @@ func Run(servers []config.Server, cfg RunConfig) []TransferResult {
 
 // executeOnServer runs the full deploy pipeline: hooks → transfer → hooks.
 func executeOnServer(srv config.Server, cfg RunConfig, exclude []string) TransferResult {
-	// Pre-hooks
-	if srv.Hooks != nil && len(srv.Hooks.Pre) > 0 && !cfg.DryRun {
+	// Pre-hooks (SSH only — skip for local servers)
+	if !isLocal(srv) && srv.Hooks != nil && len(srv.Hooks.Pre) > 0 && !cfg.DryRun {
 		for _, cmd := range srv.Hooks.Pre {
 			out, err := RunSSHFunc(srv, cmd)
 			if err != nil {
@@ -157,7 +157,7 @@ func executeOnServer(srv config.Server, cfg RunConfig, exclude []string) Transfe
 	// Transfer
 	var r TransferResult
 	switch srv.Method {
-	case "rsync":
+	case "rsync", "local":
 		r = RunRsyncFunc(srv, cfg, exclude)
 	case "sftp", "ssh":
 		r = RunSCPFunc(srv, cfg)
@@ -175,8 +175,8 @@ func executeOnServer(srv config.Server, cfg RunConfig, exclude []string) Transfe
 		r.HooksPost = len(srv.Hooks.Post)
 	}
 
-	// Post-hooks
-	if srv.Hooks != nil && len(srv.Hooks.Post) > 0 && !cfg.DryRun {
+	// Post-hooks (SSH only — skip for local servers)
+	if !isLocal(srv) && srv.Hooks != nil && len(srv.Hooks.Post) > 0 && !cfg.DryRun {
 		for _, cmd := range srv.Hooks.Post {
 			out, err := RunSSHFunc(srv, cmd)
 			if err != nil {
@@ -279,8 +279,15 @@ func runRsync(srv config.Server, cfg RunConfig, exclude []string) TransferResult
 	if srv.RemotePath != "" {
 		remoteDir = srv.RemotePath
 	}
-	// rsync destination: use AddrNoPort (port goes in -e)
-	remote := fmt.Sprintf("%s:%s", srv.AddrNoPort(), remoteDir)
+
+	var remote string
+	if isLocal(srv) {
+		// Local transfer: destination is just the directory path
+		remote = remoteDir
+	} else {
+		// Remote transfer: rsync destination uses user@host:path (port goes in -e)
+		remote = fmt.Sprintf("%s:%s", srv.AddrNoPort(), remoteDir)
+	}
 
 	args := []string{"-avzR"}
 	if cfg.Verbose {
@@ -321,7 +328,12 @@ func runRsync(srv config.Server, cfg RunConfig, exclude []string) TransferResult
 		args = append(args, remote)
 	case OpPull:
 		for _, f := range relFiles {
-			pullSrc := fmt.Sprintf("%s:%s%s", srv.AddrNoPort(), remoteDir, f)
+			var pullSrc string
+			if isLocal(srv) {
+				pullSrc = filepath.ToSlash(filepath.Join(remoteDir, f))
+			} else {
+				pullSrc = fmt.Sprintf("%s:%s%s", srv.AddrNoPort(), remoteDir, f)
+			}
 			args = append(args, pullSrc)
 		}
 		args = append(args, ".")
@@ -505,6 +517,11 @@ func runSCP(srv config.Server, cfg RunConfig) TransferResult {
 
 // runSSH executes commands via SSH directly.
 func runSSH(srv config.Server, cmdStr string) (string, error) {
+	// Local servers don't support SSH.
+	if isLocal(srv) {
+		return "", fmt.Errorf("SSH not supported for local server %q", srv.Name)
+	}
+
 	// Build auth methods: try agent first, then key files
 	var authMethods []ssh.AuthMethod
 
@@ -676,8 +693,18 @@ func formatBytes(b int64) string {
 	}
 }
 
+// isLocal returns true if the server uses local (non-SSH) transfer.
+// Only servers configured with method = "local" are treated as local.
+func isLocal(srv config.Server) bool {
+	return srv.Method == "local"
+}
+
 // buildSSHOpts builds the SSH options string for rsync -e.
+// Returns empty string for local servers (no SSH needed).
 func buildSSHOpts(srv config.Server) string {
+	if isLocal(srv) {
+		return ""
+	}
 	opts := "ssh"
 	if srv.Port > 0 && srv.Port != 22 {
 		opts += fmt.Sprintf(" -p %d", srv.Port)
@@ -750,11 +777,22 @@ func RunCommands(servers []config.Server, commands []string, cfg RunConfig) []Tr
 				if cfg.DryRun {
 					continue
 				}
-				out, err := RunSSHFunc(s, cmd)
-				if err != nil {
-					r.Status = "error"
-					r.Error = fmt.Sprintf("command %q: %v\n%s", cmd, err, out)
-					break
+				if isLocal(s) {
+					// Run command locally
+					localCmd := exec.Command("sh", "-c", cmd)
+					out, err := localCmd.CombinedOutput()
+					if err != nil {
+						r.Status = "error"
+						r.Error = fmt.Sprintf("command %q: %v\n%s", cmd, err, string(out))
+						break
+					}
+				} else {
+					out, err := RunSSHFunc(s, cmd)
+					if err != nil {
+						r.Status = "error"
+						r.Error = fmt.Sprintf("command %q: %v\n%s", cmd, err, out)
+						break
+					}
 				}
 			}
 			r.Elapsed = time.Since(start).Round(time.Millisecond).String()
@@ -767,9 +805,17 @@ func RunCommands(servers []config.Server, commands []string, cfg RunConfig) []Tr
 	return results
 }
 
-// EnsureRemoteDirs creates remote directories via SSH.
+// EnsureRemoteDirs creates remote directories via SSH, or local directories for local servers.
 func EnsureRemoteDirs(srv config.Server, dirs []string) error {
 	if len(dirs) == 0 {
+		return nil
+	}
+	if isLocal(srv) {
+		for _, d := range dirs {
+			if err := os.MkdirAll(d, 0755); err != nil {
+				return fmt.Errorf("mkdir local: %w", err)
+			}
+		}
 		return nil
 	}
 	out, err := RunSSHFunc(srv, "mkdir -p "+strings.Join(dirs, " "))
@@ -846,8 +892,14 @@ func RunRollback(servers []config.Server, opts RollbackOptions) []TransferResult
 				remoteDir = s.RemotePath
 			}
 
-			backupSrc := fmt.Sprintf("%s:%s/", s.AddrNoPort(), bp)
-			remote := fmt.Sprintf("%s:%s", s.AddrNoPort(), remoteDir)
+			var backupSrc, remote string
+			if isLocal(s) {
+				backupSrc = bp + "/"
+				remote = remoteDir
+			} else {
+				backupSrc = fmt.Sprintf("%s:%s/", s.AddrNoPort(), bp)
+				remote = fmt.Sprintf("%s:%s", s.AddrNoPort(), remoteDir)
+			}
 
 			args := []string{"-avz"}
 			if sshOpt := buildSSHOpts(s); sshOpt != "" {
