@@ -201,3 +201,10 @@ See `.github/workflows/release.yml`.
 deploi skill install   # Install Hermes skill
 deploi skill show      # View embedded skill
 ```
+
+## Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
+commit conventions, and the PR process. This project is released under the
+[MIT License](LICENSE) — see [SECURITY.md](SECURITY.md) for reporting
+vulnerabilities and [CHANGELOG.md](CHANGELOG.md) for release notes.

@@ -1,0 +1,64 @@
+name: Bug report
+description: Report a bug in deploi
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Before submitting, search existing issues to
+        make sure this isn't a duplicate.
+  - type: input
+    id: version
+    attributes:
+      label: deploi version
+      description: Output of `deploi --version` (or `git describe --tags`)
+      placeholder: v0.1.8
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+      default: 0
+    validations:
+      required: true
+  - type: input
+    id: go_version
+    attributes:
+      label: Go version (if built from source)
+      description: Output of `go version`
+      placeholder: go1.25.0
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands you ran, e.g. `deploi push -s prod -m git-diff`
+      placeholder: |
+        1. `deploi push -s prod -m all`
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened? Include error output.
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config (redact credentials!)
+      description: Server definition or flags involved. Remove passwords, keys, and hostnames if you prefer.
+      render: toml

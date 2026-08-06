@@ -1,0 +1,37 @@
+name: Feature request
+description: Suggest an idea for deploi
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion! Search existing issues first — maybe it's
+        already on the roadmap.
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What problem are you trying to solve? What's your workflow?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How should it work? Describe the command/flag/behavior you imagine.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else did you try (other flags, scripts, tools)?
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How would we know this feature is done?
+      placeholder: |
+        - [ ] `deploi <new-command>` exists and is documented
+        - [ ] Works with `--json` output
+        - [ ] Tests cover the happy path
